@@ -38,6 +38,10 @@ log = logging.getLogger(__name__)
 SOURCE = "2gis"
 SENDER = "account.2gis.com"
 
+# 2ГИС шлёт на тот же адрес рекламу и сообщения о карточке. Письма об
+# отзывах узнаём по теме: «В 2ГИС оставили хороший отзыв о вашей компании».
+SUBJECT_RE = re.compile(r"отзыв", re.IGNORECASE)
+
 # «О компании Капучино написали хороший отзыв»
 HEADER_RE = re.compile(r"О компании\s+(.+?)\s+написали\s+(\S+)\s+отзыв", re.S)
 READ_MORE = "Читать полностью"
@@ -60,7 +64,10 @@ CATEGORY_RATINGS = {
 
 
 def matches(msg_from: str, subject: str = "") -> bool:
-    return SENDER in (msg_from or "")
+    """См. комментарий в yandex_business.matches."""
+    if SENDER not in (msg_from or ""):
+        return False
+    return not subject or bool(SUBJECT_RE.search(subject))
 
 
 def parse(raw: bytes) -> list[Review]:
