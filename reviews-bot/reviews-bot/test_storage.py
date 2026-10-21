@@ -107,3 +107,64 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def test_migration_from_old_schema() -> None:
+    """
+    Проверка обновления боевой базы: таблицы уже есть, новых колонок нет.
+
+    Этот случай однажды уронил бота на сервере: CREATE TABLE IF NOT EXISTS
+    пропускает существующую таблицу целиком, поэтому новые колонки надо
+    дописывать миграциями. Тесты на чистой базе такое не ловят.
+
+    Запуск: DATABASE_URL=... python -c "import test_storage; test_storage.test_migration_from_old_schema()"
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    old = """
+    DROP TABLE IF EXISTS reviews, emails, branches, state CASCADE;
+    CREATE TABLE branches (
+        id SERIAL PRIMARY KEY, source TEXT NOT NULL, name TEXT NOT NULL,
+        address TEXT NOT NULL, address_norm TEXT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (source, address_norm));
+    CREATE TABLE emails (
+        id SERIAL PRIMARY KEY, message_id TEXT UNIQUE, source TEXT,
+        received_at TIMESTAMPTZ, parsed_ok BOOLEAN NOT NULL DEFAULT FALSE,
+        error TEXT, raw BYTEA, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+    CREATE TABLE reviews (
+        id SERIAL PRIMARY KEY, source TEXT NOT NULL,
+        branch_id INTEGER REFERENCES branches(id), branch_address_raw TEXT,
+        rating SMALLINT, rating_confident BOOLEAN NOT NULL DEFAULT FALSE,
+        text TEXT NOT NULL DEFAULT '', text_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+        reply_url TEXT, received_at TIMESTAMPTZ NOT NULL, dedup_key TEXT NOT NULL,
+        possible_duplicate BOOLEAN NOT NULL DEFAULT FALSE,
+        duplicate_of INTEGER REFERENCES reviews(id),
+        status TEXT NOT NULL DEFAULT 'new', email_id INTEGER REFERENCES emails(id),
+        warnings TEXT[], created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+    CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+    """
+
+    raw = psycopg.connect(DB, row_factory=dict_row)
+    with raw.cursor() as cur:
+        cur.execute(old)
+    raw.commit()
+    raw.close()
+
+    conn = storage.connect(DB)
+    storage.init_schema(conn)
+    storage.init_schema(conn)  # повторный запуск не должен ломаться
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name='reviews'"
+        )
+        cols = {r["column_name"] for r in cur.fetchall()}
+
+    missing = {"is_negative", "author", "text_full", "published_at"} - cols
+    assert not missing, f"колонки не добавились: {missing}"
+    print("  миграция со старой базы: ок")
+    conn.close()

@@ -80,7 +80,6 @@ CREATE TABLE IF NOT EXISTS state (
 CREATE INDEX IF NOT EXISTS reviews_dedup_idx  ON reviews (dedup_key);
 CREATE INDEX IF NOT EXISTS reviews_status_idx ON reviews (status);
 CREATE INDEX IF NOT EXISTS reviews_branch_idx ON reviews (branch_id);
-CREATE INDEX IF NOT EXISTS reviews_negative_idx ON reviews (is_negative) WHERE is_negative;
 """
 
 
@@ -138,11 +137,44 @@ def connect(database_url: str) -> psycopg.Connection:
     return conn
 
 
+# Миграции: CREATE TABLE IF NOT EXISTS пропускает уже существующую таблицу
+# целиком, поэтому новые колонки в неё надо дописывать отдельно. Каждая
+# команда безопасна при повторном запуске, порядок значения не имеет.
+#
+# Добавляя колонку в SCHEMA, ОБЯЗАТЕЛЬНО продублируй её здесь — иначе на
+# боевой базе, где таблица уже создана, колонки не появится.
+MIGRATIONS = [
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS author TEXT",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS text_full TEXT",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS published_at DATE",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE branches ADD COLUMN IF NOT EXISTS chat_id TEXT",
+    "ALTER TABLE branches ADD COLUMN IF NOT EXISTS external_id TEXT",
+    # индексы после колонок: на старой базе колонки может ещё не быть
+    "CREATE INDEX IF NOT EXISTS reviews_negative_idx ON reviews (is_negative) WHERE is_negative",
+]
+
+
 def init_schema(conn: psycopg.Connection) -> None:
+    """Создаёт недостающие таблицы и дописывает недостающие колонки."""
     with conn.cursor() as cur:
         cur.execute(SCHEMA)
     conn.commit()
-    log.info("схема базы готова")
+
+    applied = 0
+    for sql in MIGRATIONS:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+            conn.commit()
+            applied += 1
+        except psycopg.Error as e:
+            # Одна неудачная миграция не должна валить запуск целиком:
+            # остальные применятся, а в логе будет видно, что пошло не так.
+            conn.rollback()
+            log.error("миграция не применилась: %s — %s", sql[:60], e)
+
+    log.info("схема базы готова (миграций применено: %s)", applied)
 
 
 # --- Справочник филиалов ----------------------------------------------------
