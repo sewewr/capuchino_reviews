@@ -1,0 +1,5 @@
+beautifulsoup4>=4.12
+psycopg[binary]>=3.2
+aiogram>=3.13
+gspread>=6.0
+google-auth>=2.30
