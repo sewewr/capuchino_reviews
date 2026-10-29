@@ -6,11 +6,13 @@
 /report             — прислать еженедельный отчёт прямо сейчас
 /report_time        — когда приходит отчёт; /report_time пт 18:00, /report_time выкл
 /report_here        — присылать отчёт в этот чат
+/topics             — что хвалят и ругают (ИИ-разбор тем, п. 14 ТЗ)
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 from datetime import datetime
@@ -123,8 +125,12 @@ async def receive_period(message: Message, state: FSMContext, conn) -> None:
 
 @router.message(Command("report"))
 async def cmd_report(message: Message, conn) -> None:
-    text = analytics.build_report(conn, chat=str(message.chat.id))
+    now = datetime.now(analytics.TZ)
+    text = analytics.build_report(conn, now=now, chat=str(message.chat.id))
     await message.answer(text, disable_web_page_preview=True)
+    extra = await weekly_topics(conn, now)
+    if extra:
+        await message.answer(extra)
 
 
 @router.message(Command("report_time"))
@@ -165,16 +171,129 @@ async def cmd_report_here(message: Message, conn) -> None:
     await message.answer(f"Еженедельный отчёт будет приходить сюда — {schedule.describe()}.")
 
 
+# --- Темы отзывов (п. 14 ТЗ) ------------------------------------------------
+
+TOPIC_PERIODS = {"week": analytics.period_week, "month": analytics.period_month}
+
+
+def topics_keyboard(active: str) -> InlineKeyboardMarkup:
+    def btn(label, key):
+        return InlineKeyboardButton(text=("• " if key == active else "") + label,
+                                    callback_data=f"tp:{key}")
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [btn("Неделя", "week"), btn("Месяц", "month")],
+        [InlineKeyboardButton(text="🧠 Резюме от ИИ", callback_data=f"tp:sum:{active}")],
+    ])
+
+
+async def catch_up_topics(conn, max_batches: int = 3) -> str | None:
+    """Разобрать свежие отзывы перед показом. Возвращает текст ошибки, если не вышло."""
+    import drafts
+    import topics
+
+    if not drafts.enabled():
+        return "ИИ не подключён (нет GIGACHAT_CREDENTIALS) — темы не разбираются"
+    try:
+        await asyncio.to_thread(topics.process_pending, conn, None, max_batches)
+    except drafts.DraftError as e:
+        return str(e)
+    return None
+
+
+def topics_text(conn, key: str, problem: str | None = None) -> str:
+    import topics
+
+    period = TOPIC_PERIODS[key]()
+    text = topics.render(topics.collect(conn, period), topics.collect(conn, period.previous()))
+    if problem:
+        text += f"\n\n⚠️ {html.escape(problem)}"
+    return text
+
+
+@router.message(Command("topics"))
+async def cmd_topics(message: Message, conn) -> None:
+    wait = await message.answer("Разбираю свежие отзывы…")
+    problem = await catch_up_topics(conn)
+    await wait.edit_text(topics_text(conn, "week", problem), reply_markup=topics_keyboard("week"))
+
+
+@router.callback_query(F.data.startswith("tp:"))
+async def on_topics_button(callback: CallbackQuery, conn) -> None:
+    import drafts
+    import topics
+
+    parts = callback.data.split(":")
+    if parts[1] == "sum":
+        key = parts[2] if len(parts) > 2 and parts[2] in TOPIC_PERIODS else "week"
+        await callback.answer("Готовлю резюме, это займёт несколько секунд")
+        period = TOPIC_PERIODS[key]()
+        try:
+            await catch_up_topics(conn)
+            text = await asyncio.to_thread(topics.summarize, conn, period)
+        except drafts.DraftError as e:
+            await callback.message.answer(f"Не получилось подготовить резюме: {html.escape(str(e))}")
+            return
+        await callback.message.answer(
+            f"🧠 <b>Резюме — {period.title.lower()}: {period.label()}</b>\n\n{html.escape(text)}")
+        return
+
+    key = parts[1] if parts[1] in TOPIC_PERIODS else "week"
+    await callback.answer()
+    try:
+        await callback.message.edit_text(topics_text(conn, key), reply_markup=topics_keyboard(key))
+    except Exception as e:
+        log.debug("темы не обновились: %s", e)
+
+
+async def weekly_topics(conn, now: datetime) -> str:
+    """Блок «Темы недели» с резюме от ИИ для еженедельного отчёта. Пусто — если ИИ нет."""
+    import drafts
+    import topics
+
+    if not drafts.enabled():
+        return ""
+    await catch_up_topics(conn, max_batches=20)
+    period = analytics.period_report(now)
+    st = topics.collect(conn, period)
+    summary = None
+    try:
+        summary = await asyncio.to_thread(topics.summarize, conn, period)
+    except Exception as e:  # отчёт уйдёт и без резюме
+        log.warning("резюме недели не получилось: %s", e)
+    return topics.report_block(st, summary)
+
+
 # --- Фоновая отправка -------------------------------------------------------
+
+TOPICS_EVERY = 10  # минут между фоновыми разборами тем
 
 
 async def report_loop(bot: Bot, conn, notify_admin=None, now=None) -> None:
-    """Раз в минуту проверяем, не пора ли отправить отчёт."""
+    """
+    Раз в минуту проверяем, не пора ли отправить отчёт. Раз в TOPICS_EVERY
+    минут разбираем новые отзывы на темы — понемногу, чтобы к отчёту всё
+    было готово и /topics открывался быстро.
+    """
+    import drafts
+    import topics
+
+    tick = 0
     while True:
         try:
             await send_if_due(bot, conn, notify_admin)
         except Exception:
             log.exception("сбой в расписании отчёта")
+
+        if tick % TOPICS_EVERY == 0 and drafts.enabled():
+            try:
+                done = await asyncio.to_thread(topics.process_pending, conn)
+                if done:
+                    log.info("разобрано на темы отзывов: %s", done)
+            except Exception as e:
+                log.warning("разбор тем отложен: %s", e)
+                conn.rollback()
+        tick += 1
         await asyncio.sleep(60)
 
 
@@ -189,8 +308,11 @@ async def send_if_due(bot: Bot, conn, notify_admin=None, now: datetime | None = 
     # одну неделю, чем слать отчёт каждую минуту.
     storage.set_state(conn, analytics.REPORT_LAST, analytics.week_key(now))
     text = analytics.build_report(conn, now=now, chat=schedule.chat)
+    extra = await weekly_topics(conn, now)
     try:
         await bot.send_message(schedule.chat, text, disable_web_page_preview=True)
+        if extra:  # отдельным сообщением: вместе с отчётом может не влезть в лимит Telegram
+            await bot.send_message(schedule.chat, extra)
         log.info("еженедельный отчёт отправлен в %s", schedule.chat)
         return True
     except Exception as e:
