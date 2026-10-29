@@ -152,6 +152,12 @@ def address_tokens(address: str) -> set[str]:
             continue
         if len(t) == 1 and t.isalpha():  # инициал
             continue
+        # «48/1» — дробь к номеру дома: 2ГИС пишет «Ногина переулок, 48/1»,
+        # Яндекс — «пер. Ногина, 48». Здание одно, сравниваем по основному номеру.
+        # Литеру («9Б») не трогаем: это может быть другой дом.
+        m = re.fullmatch(r"(\d+[а-я]?)/\d+[а-я]?", t)
+        if m:
+            t = m.group(1)
         tokens.add(t)
     return tokens
 
@@ -309,6 +315,38 @@ def find_branch(
             )
         candidates.sort(key=lambda x: x[0], reverse=True)
         return Branch(**candidates[0][1])
+
+
+def rematch_unassigned(conn: psycopg.Connection) -> int:
+    """
+    Отзывы с неопознанным филиалом пробуем сопоставить заново — после
+    правки справочника или правил сравнения адресов. Возвращает, сколько
+    отзывов нашли свой филиал.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, source, branch_address_raw FROM reviews "
+            "WHERE branch_id IS NULL AND branch_address_raw IS NOT NULL"
+        )
+        rows = cur.fetchall()
+
+    fixed = 0
+    for row in rows:
+        branch = find_branch(conn, row["source"], row["branch_address_raw"])
+        if branch is None:
+            continue
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE reviews SET branch_id = %s, "
+                "warnings = array_remove(warnings, 'филиал не найден в справочнике') "
+                "WHERE id = %s",
+                (branch.id, row["id"]),
+            )
+        fixed += 1
+        log.info("отзыв #%s: адрес %r теперь узнан — %s",
+                 row["id"], row["branch_address_raw"], branch.address)
+    conn.commit()
+    return fixed
 
 
 # --- Письма -----------------------------------------------------------------

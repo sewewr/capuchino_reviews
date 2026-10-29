@@ -175,3 +175,41 @@ def test_migration_from_old_schema() -> None:
         assert cur.fetchone()["t"], "таблица drafts не создалась"
     print("  миграция со старой базы: ок")
     conn.close()
+
+
+def test_rematch() -> None:
+    """Отзыв с неузнанным адресом находит филиал после правки правил сравнения."""
+    from datetime import datetime, timezone
+
+    conn = storage.connect(DB)
+    storage.init_schema(conn)
+    from seed_branches import BRANCHES, SOURCES
+    for source in SOURCES:
+        for b in BRANCHES:
+            storage.upsert_branch(conn, source, b["name"], b["address"])
+    with conn.cursor() as cur:
+        # так отзыв лёг в базу до правки: филиала нет, есть адрес из письма
+        cur.execute(
+            "INSERT INTO reviews (source, branch_id, branch_address_raw, rating, text, "
+            "received_at, dedup_key, warnings) VALUES ('2gis', NULL, %s, 5, 'Вкусно', %s, "
+            "'rematch-test', ARRAY['филиал не найден в справочнике']) RETURNING id",
+            ("Ногина переулок, 48/1", datetime.now(timezone.utc)),
+        )
+        rid = cur.fetchone()["id"]
+    conn.commit()
+
+    fixed = storage.rematch_unassigned(conn)
+    with conn.cursor() as cur:
+        cur.execute("SELECT b.address, r.warnings FROM reviews r "
+                    "JOIN branches b ON b.id = r.branch_id WHERE r.id = %s", (rid,))
+        row = cur.fetchone()
+    print("\n--- неузнанный филиал задним числом ---")
+    print(f"  исправлено отзывов: {fixed}  (ждём 1)")
+    print(f"  филиал: {row['address'] if row else 'НЕТ'}  (ждём пер. Ногина, 48)")
+    print(f"  предупреждение снято: {not (row and row['warnings'])}")
+    print(f"  повторный запуск: {storage.rematch_unassigned(conn)}  (ждём 0)")
+    conn.close()
+
+
+if __name__ == "__main__":
+    test_rematch()
