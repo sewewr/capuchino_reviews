@@ -66,9 +66,23 @@ CREATE TABLE IF NOT EXISTS reviews (
 
     status             TEXT NOT NULL DEFAULT 'new',  -- new | attention | in_progress | answered | skipped
     is_negative        BOOLEAN NOT NULL DEFAULT FALSE,  -- оценка не выше порога (п. 7 ТЗ)
+    assignee_id        BIGINT,                -- Telegram ID того, кто взял отзыв (п. 8 ТЗ)
+    assignee_name      TEXT,
+    taken_at           TIMESTAMPTZ,
     email_id           INTEGER REFERENCES emails(id),
     warnings           TEXT[],
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Все копии карточки в Telegram. Негатив уходит в два чата, карточку
+-- могут прислать ещё раз через /new — при смене статуса обновляются все
+-- копии, иначе в соседнем чате отзыв так и висел бы «свободным».
+CREATE TABLE IF NOT EXISTS review_messages (
+    review_id   INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    chat_id     TEXT NOT NULL,
+    message_id  BIGINT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (chat_id, message_id)
 );
 
 CREATE TABLE IF NOT EXISTS state (
@@ -148,8 +162,12 @@ MIGRATIONS = [
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS text_full TEXT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS published_at DATE",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS assignee_id BIGINT",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS assignee_name TEXT",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS taken_at TIMESTAMPTZ",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS chat_id TEXT",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS external_id TEXT",
+    "CREATE INDEX IF NOT EXISTS review_messages_review_idx ON review_messages (review_id)",
     # индексы после колонок: на старой базе колонки может ещё не быть
     "CREATE INDEX IF NOT EXISTS reviews_negative_idx ON reviews (is_negative) WHERE is_negative",
 ]
@@ -427,6 +445,7 @@ def get_card_data(conn: psycopg.Connection, review_id: int) -> dict | None:
             SELECT r.id AS review_id, r.source, r.rating, r.rating_confident,
                    r.text, r.text_full, r.text_truncated, r.author, r.published_at,
                    r.received_at, r.reply_url, r.status, r.is_negative,
+                   r.assignee_name AS assignee,
                    r.possible_duplicate, r.duplicate_of,
                    b.name AS branch_name, b.address AS branch_address
             FROM reviews r
@@ -444,6 +463,101 @@ def set_status(conn: psycopg.Connection, review_id: int, status: str) -> None:
     with conn.cursor() as cur:
         cur.execute("UPDATE reviews SET status = %s WHERE id = %s", (status, review_id))
     conn.commit()
+
+
+# --- Ответственные (п. 8 ТЗ) -------------------------------------------------
+
+
+OPEN_STATUSES = ("new", "attention")
+
+
+def claim_review(conn: psycopg.Connection, review_id: int,
+                 user_id: int, user_name: str) -> tuple[bool, str | None]:
+    """
+    Взять отзыв в работу. Возвращает (удалось, кто_ведёт_отзыв).
+
+    Проверка и запись — одним UPDATE: если двое нажмут «Взять в работу»
+    одновременно, отзыв достанется ровно одному, второй получит имя первого.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE reviews
+               SET status = 'in_progress', assignee_id = %s,
+                   assignee_name = %s, taken_at = now()
+             WHERE id = %s AND status IN ('new', 'attention')
+         RETURNING id
+            """,
+            (user_id, user_name, review_id),
+        )
+        won = cur.fetchone() is not None
+        if not won:
+            cur.execute("SELECT assignee_name FROM reviews WHERE id = %s", (review_id,))
+            row = cur.fetchone()
+            current = row["assignee_name"] if row else None
+    conn.commit()
+    return (True, user_name) if won else (False, current)
+
+
+def release_review(conn: psycopg.Connection, review_id: int) -> None:
+    """
+    Вернуть отзыв в очередь: снять ответственного и вернуть исходный статус.
+    Негатив возвращается в «Требует внимания», остальное — в «Новый».
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE reviews
+               SET status = CASE WHEN is_negative THEN 'attention' ELSE 'new' END,
+                   assignee_id = NULL, assignee_name = NULL, taken_at = NULL
+             WHERE id = %s
+            """,
+            (review_id,),
+        )
+    conn.commit()
+
+
+def close_review(conn: psycopg.Connection, review_id: int, status: str,
+                 user_id: int, user_name: str) -> None:
+    """
+    Закрыть отзыв («Обработан» или «Не требует ответа»). Если его никто не
+    брал в работу, ответственным записывается тот, кто закрыл: в таблице и
+    в карточке должно быть видно, кто принял решение.
+    """
+    if status not in ("answered", "skipped"):
+        raise ValueError(f"закрыть можно только как answered/skipped, не {status}")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE reviews
+               SET status = %s,
+                   assignee_id = COALESCE(assignee_id, %s),
+                   assignee_name = COALESCE(assignee_name, %s)
+             WHERE id = %s
+            """,
+            (status, user_id, user_name, review_id),
+        )
+    conn.commit()
+
+
+def remember_message(conn: psycopg.Connection, review_id: int,
+                     chat_id, message_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO review_messages (review_id, chat_id, message_id) "
+            "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (review_id, str(chat_id), message_id),
+        )
+    conn.commit()
+
+
+def review_messages(conn: psycopg.Connection, review_id: int) -> list[tuple[str, int]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT chat_id, message_id FROM review_messages WHERE review_id = %s",
+            (review_id,),
+        )
+        return [(r["chat_id"], r["message_id"]) for r in cur.fetchall()]
 
 
 # --- Негативные отзывы (пп. 7 и 17 ТЗ) -------------------------------------
