@@ -119,7 +119,70 @@ def unit_tests():
         drafts.generate(review(), client=Broken(), brand=brand)
         ok(False, "ошибка должна подняться")
     except drafts.DraftError as e:
-        ok("GigaChat не ответил" in str(e), "понятная ошибка вместо падения")
+        ok("подключиться к GigaChat" in str(e), f"понятная ошибка вместо падения: {e}")
+
+    print("\n=== модель переименовали: «No such model» ===")
+    from gigachat.exceptions import NotFoundError, ResponseError
+    import httpx
+
+    url = "https://api.giga.chat/v1/chat/completions"
+    headers = httpx.Headers({"x-request-id": "abc", "server": "nginx"})
+    no_model = b'{"status":404,"message":"No such model"}'
+
+    class Renamed(FakeGigaChat):
+        """Знает только GigaChat-2-Pro; старое имя отвергает, как настоящий API."""
+
+        def __init__(self, models):
+            super().__init__(["Спасибо, что заглянули!"])
+            self.models = models
+            self.asked_models = []
+
+        def chat(self, chat):
+            self.asked_models.append(chat.model)
+            if chat.model not in self.models:
+                raise NotFoundError(url, 404, no_model, headers)
+            return super().chat(chat)
+
+        def get_models(self):
+            return SimpleNamespace(data=[SimpleNamespace(id_=m) for m in
+                                         ["Embeddings", *self.models]])
+
+    os.environ["GIGACHAT_MODEL"] = "GigaChat"  # как было в Railway
+    drafts._model = None
+    fake = Renamed(["GigaChat-2-Pro", "GigaChat-2-Max"])
+    d = drafts.generate(review(), client=fake, brand=brand)
+    ok(d.text.startswith("Спасибо"), "черновик всё равно получился")
+    ok(fake.asked_models == ["GigaChat", "GigaChat-2-Pro"],
+       f"после 404 бот сам выбрал доступную модель: {fake.asked_models}")
+    drafts.generate(review(), client=fake, brand=brand)
+    ok(fake.asked_models[-1] == "GigaChat-2-Pro" and len(fake.asked_models) == 3,
+       "выбор запомнен — повторной ошибки нет")
+
+    drafts._model = None
+    os.environ.pop("GIGACHAT_MODEL")
+    ok(drafts.current_model() == "GigaChat-2", "по умолчанию — GigaChat-2")
+    ok(drafts.pick_model(["Embeddings", "GigaChat-2-Max", "GigaChat-2"]) == "GigaChat-2",
+       "из списка выбирается самая лёгкая модель")
+    ok(drafts.pick_model(["Embeddings", "GigaChat-3-Ultra"]) == "GigaChat-3-Ultra",
+       "незнакомая новая линейка тоже подойдёт")
+    ok(drafts.pick_model(["Embeddings"]) is None, "без чат-моделей — не выбираем эмбеддинги")
+
+    drafts._model = None
+    fake = Renamed([])  # у аккаунта нет ни одной чат-модели
+    try:
+        drafts.generate(review(), client=fake, brand=brand)
+        ok(False, "ошибка должна подняться")
+    except drafts.DraftError as e:
+        msg = str(e)
+        ok("GIGACHAT_MODEL" in msg, f"понятная причина: {msg}")
+        ok("Headers" not in msg and "x-request-id" not in msg and len(msg) < 150,
+           "без простыни HTTP-заголовков")
+
+    print("\n=== короткие причины по кодам ответа ===")
+    for code, expect in [(401, "ключ"), (402, "токены"), (429, "подождите"), (503, "временно")]:
+        msg = drafts.explain(ResponseError(url, code, b"{}", headers))
+        ok(expect in msg and "Headers" not in msg, f"{code}: {msg}")
+    drafts._model = None
 
 
 # --- сквозная проверка в боте -------------------------------------------------

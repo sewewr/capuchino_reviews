@@ -39,6 +39,13 @@ RECENT_OPENINGS = 15  # сколько последних начал запре�
 CERT_URL = "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt"
 CERT_IN_REPO = Path(__file__).parent / "certs" / "russian_trusted_root_ca.crt"
 
+# Модель по умолчанию — самая быстрая и дешёвая из актуальной линейки.
+# Сбер периодически переименовывает модели (старое имя «GigaChat» уже не
+# принимается), поэтому при ответе «No such model» бот сам спросит у API
+# список доступных моделей и выберет первую подходящую из этого порядка.
+DEFAULT_MODEL = "GigaChat-2"
+MODEL_PREFERENCE = ["GigaChat-2", "GigaChat-2-Pro", "GigaChat-2-Max"]
+
 STYLES = {
     "base": "",
     "another": (
@@ -256,6 +263,7 @@ def _same_start(a: str, b: str, words: int = 3) -> bool:
 
 
 _client = None
+_model: str | None = None  # модель, на которой реально работаем
 
 
 def ensure_certificate() -> str:
@@ -301,7 +309,7 @@ def get_client():
     _client = GigaChat(
         credentials=credentials,
         scope=os.environ.get("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
-        model=os.environ.get("GIGACHAT_MODEL", "GigaChat"),
+        model=current_model(),
         ca_bundle_file=ensure_certificate(),
         timeout=60,
     )
@@ -312,21 +320,102 @@ def enabled() -> bool:
     return bool(os.environ.get("GIGACHAT_CREDENTIALS"))
 
 
+def current_model() -> str:
+    return _model or os.environ.get("GIGACHAT_MODEL", "").strip() or DEFAULT_MODEL
+
+
+def pick_model(available: list[str]) -> str | None:
+    """Из списка моделей аккаунта — первая по нашему порядку, иначе любая чат-модель."""
+    for name in MODEL_PREFERENCE:
+        if name in available:
+            return name
+    chat_models = [m for m in available
+                   if m.lower().startswith("gigachat") and "embed" not in m.lower()]
+    return sorted(chat_models)[0] if chat_models else None
+
+
+def _status(e: Exception) -> int | None:
+    return getattr(e, "status_code", None)
+
+
+def _is_unknown_model(e: Exception) -> bool:
+    content = getattr(e, "content", b"") or b""
+    if isinstance(content, bytes):
+        content = content.decode("utf-8", "replace")
+    return _status(e) == 404 and "model" in str(content).lower()
+
+
+def explain(e: Exception) -> str:
+    """Короткая понятная причина вместо простыни с HTTP-заголовками."""
+    status = _status(e)
+    if status == 401:
+        return "GigaChat не принял ключ — проверьте GIGACHAT_CREDENTIALS и GIGACHAT_SCOPE"
+    if status == 402:
+        return "на аккаунте GigaChat закончились токены"
+    if status == 403:
+        return "у ключа GigaChat нет доступа к этой модели"
+    if status == 404:
+        if _is_unknown_model(e):
+            return f"GigaChat не знает модель «{current_model()}» — проверьте GIGACHAT_MODEL"
+        return "GigaChat ответил «не найдено» (404)"
+    if status == 429:
+        return "слишком много запросов к GigaChat — подождите минуту и нажмите ещё раз"
+    if status is not None and status >= 500:
+        return f"GigaChat временно недоступен (ошибка {status}) — попробуйте позже"
+    if status is not None:
+        return f"GigaChat вернул ошибку {status}"
+    name = type(e).__name__
+    if "Timeout" in name:
+        return "GigaChat долго не отвечал — попробуйте ещё раз"
+    if "Connect" in name or "SSL" in name or "Certificate" in str(e):
+        return "не удалось подключиться к GigaChat"
+    text = str(e).split("\n")[0]
+    return text[:200] if text else name
+
+
+def _switch_model(client) -> bool:
+    """Модель не найдена: смотрим, какие есть у аккаунта, и переключаемся."""
+    global _model
+    try:
+        available = [m.id_ for m in client.get_models().data]
+    except Exception as e:
+        log.warning("не удалось получить список моделей GigaChat: %s", explain(e))
+        return False
+    chosen = pick_model(available)
+    log.warning("модели «%s» нет; доступны: %s; выбрана: %s",
+                current_model(), ", ".join(available) or "—", chosen)
+    if not chosen or chosen == current_model():
+        return False
+    _model = chosen
+    return True
+
+
 def _ask(client, system: str, user: str, temperature: float) -> str:
     from gigachat.models import Chat, Messages, MessagesRole
 
-    chat = Chat(
-        messages=[
-            Messages(role=MessagesRole.SYSTEM, content=system),
-            Messages(role=MessagesRole.USER, content=user),
-        ],
-        temperature=temperature,
-        max_tokens=600,
-    )
+    def request():
+        return client.chat(Chat(
+            model=current_model(),
+            messages=[
+                Messages(role=MessagesRole.SYSTEM, content=system),
+                Messages(role=MessagesRole.USER, content=user),
+            ],
+            temperature=temperature,
+            max_tokens=600,
+        ))
+
     try:
-        response = client.chat(chat)
+        try:
+            response = request()
+        except Exception as e:
+            if not (_is_unknown_model(e) and _switch_model(client)):
+                raise
+            response = request()
+    except DraftError:
+        raise
     except Exception as e:
-        raise DraftError(f"GigaChat не ответил: {e}") from e
+        log.warning("GigaChat: %s", e)  # полная ошибка — только в логи Railway
+        raise DraftError(explain(e)) from e
 
     if not response.choices:
         raise DraftError("GigaChat вернул пустой ответ")

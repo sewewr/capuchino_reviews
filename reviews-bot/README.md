@@ -151,7 +151,12 @@ DATABASE_URL=postgresql://... TELEGRAM_TOKEN=... python -m telegram_ui.bot
 а сотрудник видит подсказку добавить полный текст.
 
 **Настройка.** `GIGACHAT_CREDENTIALS` — ключ авторизации из кабинета
-developers.sber.ru; `GIGACHAT_SCOPE` — `GIGACHAT_API_PERS` для физлица.
+developers.sber.ru; `GIGACHAT_SCOPE` — `GIGACHAT_API_PERS` для физлица;
+`GIGACHAT_MODEL` — модель, по умолчанию `GigaChat-2` (самая быстрая и дешёвая;
+есть ещё `GigaChat-2-Pro` и `GigaChat-2-Max`). Если Сбер переименует модели и
+API ответит «No such model», бот сам запросит список доступных моделей и
+переключится на подходящую. Ошибки GigaChat в Telegram показываются коротко,
+полный текст — в логах Railway.
 GigaChat требует корневой сертификат Минцифры: бот скачивает его сам при
 первом обращении, а если не смог — подскажет положить файл в `certs/`
 (см. `certs/README.md`). Версия библиотеки `gigachat` закреплена: вызов
