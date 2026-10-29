@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     assignee_id        BIGINT,                -- Telegram ID того, кто взял отзыв (п. 8 ТЗ)
     assignee_name      TEXT,
     taken_at           TIMESTAMPTZ,
+    topics_at          TIMESTAMPTZ,           -- когда ИИ разобрал темы отзыва (п. 14 ТЗ)
     email_id           INTEGER REFERENCES emails(id),
     warnings           TEXT[],
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -96,6 +97,14 @@ CREATE TABLE IF NOT EXISTS review_messages (
     message_id  BIGINT NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (chat_id, message_id)
+);
+
+-- Темы отзыва, которые выделил ИИ (п. 14 ТЗ): что хвалят (+1) и что ругают (−1).
+CREATE TABLE IF NOT EXISTS review_topics (
+    review_id   INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    topic       TEXT NOT NULL,
+    sentiment   SMALLINT NOT NULL,       -- 1 хвалят, -1 ругают
+    PRIMARY KEY (review_id, topic)
 );
 
 CREATE TABLE IF NOT EXISTS state (
@@ -185,12 +194,14 @@ MIGRATIONS = [
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS assignee_id BIGINT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS assignee_name TEXT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS taken_at TIMESTAMPTZ",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS topics_at TIMESTAMPTZ",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS chat_id TEXT",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS external_id TEXT",
     "CREATE INDEX IF NOT EXISTS review_messages_review_idx ON review_messages (review_id)",
     "CREATE INDEX IF NOT EXISTS drafts_review_idx ON drafts (review_id, id)",
     # индексы после колонок: на старой базе колонки может ещё не быть
     "CREATE INDEX IF NOT EXISTS reviews_negative_idx ON reviews (is_negative) WHERE is_negative",
+    "CREATE INDEX IF NOT EXISTS reviews_topics_pending_idx ON reviews (received_at) WHERE topics_at IS NULL",
 ]
 
 
@@ -494,10 +505,12 @@ def add_full_text(
         cur.execute(
             "UPDATE reviews SET text_full = %s, "
             "author = COALESCE(%s, author), "
-            "published_at = COALESCE(%s::date, published_at) "
+            "published_at = COALESCE(%s::date, published_at), "
+            "topics_at = NULL "  # полный текст — темы разберём заново
             "WHERE id = %s",
             (text_full, author, published_at, review_id),
         )
+        cur.execute("DELETE FROM review_topics WHERE review_id = %s", (review_id,))
     conn.commit()
 
 

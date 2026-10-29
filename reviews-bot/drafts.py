@@ -390,7 +390,7 @@ def _switch_model(client) -> bool:
     return True
 
 
-def _ask(client, system: str, user: str, temperature: float) -> str:
+def _ask(client, system: str, user: str, temperature: float, max_tokens: int = 600) -> str:
     from gigachat.models import Chat, Messages, MessagesRole
 
     def request():
@@ -401,7 +401,7 @@ def _ask(client, system: str, user: str, temperature: float) -> str:
                 Messages(role=MessagesRole.USER, content=user),
             ],
             temperature=temperature,
-            max_tokens=600,
+            max_tokens=max_tokens,
         ))
 
     try:
