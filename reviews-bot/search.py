@@ -22,13 +22,15 @@ from analytics import TZ, short_address
 PAGE_SIZE = 8
 
 PERIODS = {"a": "Все", "t": "Сегодня", "y": "Вчера", "w": "Неделя"}
-STATUSES = {"a": "", "n": "🚨 Негативные", "o": "⏳ Необработанные", "d": "✅ Обработанные"}
+STATUSES = {"a": "", "n": "🚨 Негативные", "o": "⏳ Необработанные", "d": "✅ Обработанные",
+            "s": "🚫 Реклама"}  # «s» — только через /spam, отдельной кнопки нет
+ROW_STATUSES = ("n", "o", "d")
 SOURCES = {"a": "Все площадки", "y": "Яндекс", "g": "2ГИС"}
 SOURCE_CODES = {"y": "yandex", "g": "2gis"}
 SOURCE_NAMES = {"yandex": "Яндекс", "2gis": "2ГИС", "tripadvisor": "Tripadvisor"}
 
 STATUS_ICONS = {"new": "🟢", "attention": "🚨", "in_progress": "🟡",
-                "answered": "✅", "skipped": "⚪️"}
+                "answered": "✅", "skipped": "⚪️", "spam": "🚫"}
 STATUS_WORDS = {"new": "новый", "attention": "требует внимания", "in_progress": "в работе",
                 "answered": "отвечено", "skipped": "закрыт без ответа"}
 
@@ -149,6 +151,11 @@ def fetch(conn, f: Filter, now: datetime | None = None) -> Page:
         where.append("r.received_at >= %s AND r.received_at < %s")
         args += [start, end]
 
+    # Реклама видна только в своём списке (/spam), в остальных её нет.
+    if f.status == "s":
+        where.append("r.status = 'spam'")
+    else:
+        where.append("r.status <> 'spam'")
     if f.status == "n":
         where.append("r.is_negative")
     elif f.status == "o":

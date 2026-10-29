@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     possible_duplicate BOOLEAN NOT NULL DEFAULT FALSE,
     duplicate_of       INTEGER REFERENCES reviews(id),
 
-    status             TEXT NOT NULL DEFAULT 'new',  -- new | attention | in_progress | answered | skipped
+    status             TEXT NOT NULL DEFAULT 'new',  -- new | attention | in_progress | answered | skipped | spam
     is_negative        BOOLEAN NOT NULL DEFAULT FALSE,  -- оценка не выше порога (п. 7 ТЗ)
     reply_text         TEXT,                  -- итоговый ответ, ушедший на площадку (п. 9, 11 ТЗ)
     assignee_id        BIGINT,                -- Telegram ID того, кто взял отзыв (п. 8 ТЗ)
@@ -397,6 +397,7 @@ class SaveResult:
     duplicate_of: int | None
     branch_id: int | None
     is_negative: bool = False
+    is_spam: bool = False
 
 
 def save_review(conn: psycopg.Connection, review, email_id: int | None = None) -> SaveResult:
@@ -427,6 +428,15 @@ def save_review(conn: psycopg.Connection, review, email_id: int | None = None) -
         # «Требует внимания», чтобы не потеряться в общей ленте.
         negative = is_negative(review.rating, negative_threshold(conn))
 
+        # Реклама под видом отзыва («50 отзывов — 3 700 ₽») — сразу в «спам»:
+        # отвечать не нужно, в статистику и списки она не попадает.
+        import spam
+
+        looks_spam, signs = spam.detect(review.text)
+        if looks_spam:
+            warnings.append("похоже на рекламу: " + ", ".join(signs))
+        status = "spam" if looks_spam else ("attention" if negative else "new")
+
         cur.execute(
             """
             INSERT INTO reviews (
@@ -456,7 +466,7 @@ def save_review(conn: psycopg.Connection, review, email_id: int | None = None) -
                 email_id,
                 warnings,
                 negative,
-                "attention" if negative else "new",
+                status,
             ),
         )
         review_id = cur.fetchone()["id"]
@@ -468,6 +478,7 @@ def save_review(conn: psycopg.Connection, review, email_id: int | None = None) -
         duplicate_of=duplicate_of,
         branch_id=branch.id if branch else None,
         is_negative=negative,
+        is_spam=looks_spam,
     )
 
 
@@ -511,7 +522,7 @@ def get_card_data(conn: psycopg.Connection, review_id: int) -> dict | None:
 
 
 def set_status(conn: psycopg.Connection, review_id: int, status: str) -> None:
-    if status not in ("new", "attention", "in_progress", "answered", "skipped"):
+    if status not in ("new", "attention", "in_progress", "answered", "skipped", "spam"):
         raise ValueError(f"неизвестный статус: {status}")
     with conn.cursor() as cur:
         cur.execute("UPDATE reviews SET status = %s WHERE id = %s", (status, review_id))
@@ -568,6 +579,66 @@ def release_review(conn: psycopg.Connection, review_id: int) -> None:
             (review_id,),
         )
     conn.commit()
+
+
+def mark_spam(conn: psycopg.Connection, review_id: int, user_id: int | None = None,
+              user_name: str | None = None) -> None:
+    """Сотрудник пометил отзыв как рекламу. Кто пометил — видно в карточке."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE reviews SET status = 'spam', assignee_id = %s, assignee_name = %s, "
+            "taken_at = NULL WHERE id = %s",
+            (user_id, user_name, review_id),
+        )
+    conn.commit()
+
+
+def unmark_spam(conn: psycopg.Connection, review_id: int) -> None:
+    """Это не реклама — возвращаем отзыв в работу, как будто он только пришёл."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE reviews
+               SET status = CASE WHEN is_negative THEN 'attention' ELSE 'new' END,
+                   assignee_id = NULL, assignee_name = NULL, taken_at = NULL,
+                   warnings = ARRAY(SELECT w FROM unnest(warnings) AS w
+                                    WHERE w NOT LIKE 'похоже на рекламу%%')
+             WHERE id = %s AND status = 'spam'
+            """,
+            (review_id,),
+        )
+    conn.commit()
+
+
+def hide_existing_spam(conn: psycopg.Connection) -> list[int]:
+    """
+    Отзывы, пришедшие до появления фильтра рекламы: если их ещё никто не
+    трогал (новые и требующие внимания), помечаем. Взятые в работу и
+    закрытые не трогаем — там решение уже за человеком.
+    """
+    import spam
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, COALESCE(text_full, text) AS text FROM reviews "
+            "WHERE status IN ('new', 'attention')"
+        )
+        rows = cur.fetchall()
+
+    hidden = []
+    for row in rows:
+        looks_spam, signs = spam.detect(row["text"])
+        if not looks_spam:
+            continue
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE reviews SET status = 'spam', "
+                "warnings = array_append(COALESCE(warnings, '{}'), %s) WHERE id = %s",
+                ("похоже на рекламу: " + ", ".join(signs), row["id"]),
+            )
+        hidden.append(row["id"])
+    conn.commit()
+    return hidden
 
 
 def close_review(conn: psycopg.Connection, review_id: int, status: str,
