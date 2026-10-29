@@ -29,7 +29,7 @@ def ok(cond, label):
 
 def setup(conn):
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS drafts, review_messages, reviews, emails, branches, state CASCADE")
+        cur.execute("DROP TABLE IF EXISTS review_topics, drafts, review_messages, reviews, emails, branches, state CASCADE")
     conn.commit()
     storage.init_schema(conn)
     from seed_branches import BRANCHES, SOURCES
