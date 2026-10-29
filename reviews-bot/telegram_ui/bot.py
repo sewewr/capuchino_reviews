@@ -37,6 +37,14 @@ log = logging.getLogger(__name__)
 dp = Dispatcher()
 
 
+def _include_routers() -> None:
+    """Подключаем модули с кнопками. Отдельно, чтобы избежать циклического импорта."""
+    from telegram_ui import draft_ui
+
+    if draft_ui.router.parent_router is None:
+        dp.include_router(draft_ui.router)
+
+
 # --- Состояния -------------------------------------------------------------
 
 
@@ -129,6 +137,8 @@ async def cmd_start(message: Message) -> None:
         "Бот собирает отзывы с площадок и присылает их сюда.\n\n"
         "Когда приходит новый отзыв, нажмите «Взять в работу» — "
         "остальные увидят, что им уже занимаются.\n\n"
+        "Взяв отзыв, нажмите «Подготовить ответ» — бот предложит черновик. "
+        "Его можно переписать: короче, теплее, официальнее или совсем иначе.\n\n"
         "Если Яндекс обрезал текст, нажмите «Добавить полный текст» "
         "и пришлите его целиком — так он сохранится в базе.\n\n"
         "Команды:\n"
@@ -357,8 +367,9 @@ async def on_button(callback: CallbackQuery, state: FSMContext, conn) -> None:
         return
 
     if action == "draft":
-        # Черновик ответа — этап 2 по ТЗ, пока заглушка.
-        await callback.answer("Черновики ответов появятся на втором этапе", show_alert=True)
+        from telegram_ui import draft_ui
+
+        await draft_ui.start_draft(callback, conn, review_id)
         return
 
     await callback.answer("Неизвестная кнопка")
@@ -445,6 +456,7 @@ async def main() -> None:
     ensure_branches(conn)
 
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    _include_routers()
 
     # Почта читается фоновой задачей, параллельно с обработкой кнопок.
     # Своё подключение к базе: конвейер и обработчики не должны
