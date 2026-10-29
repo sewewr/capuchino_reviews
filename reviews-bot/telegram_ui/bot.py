@@ -39,10 +39,11 @@ dp = Dispatcher()
 
 def _include_routers() -> None:
     """Подключаем модули с кнопками. Отдельно, чтобы избежать циклического импорта."""
-    from telegram_ui import draft_ui
+    from telegram_ui import draft_ui, stats_ui
 
-    if draft_ui.router.parent_router is None:
-        dp.include_router(draft_ui.router)
+    for module in (draft_ui, stats_ui):
+        if module.router.parent_router is None:
+            dp.include_router(module.router)
 
 
 # --- Состояния -------------------------------------------------------------
@@ -144,6 +145,10 @@ async def cmd_start(message: Message) -> None:
         "Команды:\n"
         "/new — показать отзывы, которые ещё никто не взял\n"
         "/negative — негативные отзывы без реакции\n"
+        "/stats — статистика: сегодня, неделя, месяц, свой период\n"
+        "/report — еженедельный отчёт прямо сейчас\n"
+        "/report_time — когда приходит еженедельный отчёт\n"
+        "/report_here — присылать отчёт в этот чат\n"
         "/threshold — порог негатива (сейчас 1–3 звезды)\n"
         "/export — выгрузить в Google Таблицу сейчас\n"
         "/demo — учебные отзывы, чтобы попробовать кнопки\n"
@@ -468,10 +473,26 @@ async def main() -> None:
     else:
         log.warning("IMAP_USER не задан — почта не читается, работают только кнопки")
 
+    # Еженедельный отчёт (п. 13 ТЗ) — своя задача и своё подключение.
+    from telegram_ui import stats_ui
+
+    admin_chat = os.environ.get("TELEGRAM_ADMIN_CHAT", "")
+
+    async def alert(text: str) -> None:
+        if admin_chat:
+            try:
+                await bot.send_message(admin_chat, f"⚠️ {text}")
+            except Exception:
+                log.exception("не отправил сообщение администратору")
+
+    report_conn = storage.connect(os.environ["DATABASE_URL"])
+    report_task = asyncio.create_task(stats_ui.report_loop(bot, report_conn, alert))
+
     try:
         # conn прокидывается во все обработчики
         await dp.start_polling(bot, conn=conn)
     finally:
+        report_task.cancel()
         if mail_task:
             mail_task.cancel()
 
