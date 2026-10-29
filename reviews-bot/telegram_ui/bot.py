@@ -522,7 +522,6 @@ async def mail_loop(bot: Bot, conn) -> None:
 
     last_error: str | None = None
     last_sheets_error: str | None = None
-    silence_notified: set[str] = set()
 
     while True:
         new_ids: list[int] = []
@@ -549,7 +548,7 @@ async def mail_loop(bot: Bot, conn) -> None:
             await deliver(bot, conn, chat, review_id, cfg.negative_chat)
 
         last_sheets_error = await sync_sheet(bot, conn, cfg, last_sheets_error)
-        await check_silence(bot, conn, cfg, silence_notified)
+        await check_silence(bot, conn, cfg)
         await asyncio.sleep(cfg.poll_interval)
 
 
@@ -614,27 +613,37 @@ async def sync_sheet(bot: Bot, conn, cfg, last_error: str | None) -> str | None:
         return last_error
 
 
-async def check_silence(bot: Bot, conn, cfg, notified: set[str]) -> None:
+SILENCE_KEY = "silence_notified:"  # + площадка → дата последнего письма, о которой уже сказали
+
+
+async def check_silence(bot: Bot, conn, cfg, notified=None) -> None:
     """
     Молчание площадки выглядит одинаково и когда отзывов нет, и когда бот
     оторвался от почты. Поэтому предупреждаем администратора — один раз
-    на площадку, пока не придёт новое письмо.
+    на одно затишье, пока не придёт новое письмо.
+
+    Что уже предупредили, храним в базе, а не в памяти: иначе каждый
+    перезапуск (а Railway перезапускает бота при каждой заливке на GitHub)
+    присылал бы то же предупреждение заново.
     """
     import pipeline
 
     silent = dict(pipeline.silent_sources(conn))
     for source, days in silent.items():
-        if source in notified:
+        last = storage.last_letter_at(conn, source)
+        marker = last.isoformat() if last else ""
+        key = SILENCE_KEY + source
+        if storage.get_state(conn, key) == marker:
             continue
-        notified.add(source)
+        storage.set_state(conn, key, marker)
+        name = {"yandex": "Яндекса", "2gis": "2ГИС"}.get(source, source)
         await notify_admin(
             bot, cfg,
-            f"От площадки {source} нет писем уже {days} дн. "
-            "Возможно, отзывов правда нет — но стоит проверить настройки уведомлений в кабинете.",
+            f"От {name} нет писем об отзывах уже {days} дн. Возможно, отзывов правда "
+            "нет — но стоит проверить настройки уведомлений в кабинете площадки. "
+            "Следующее предупреждение придёт, только если площадка снова замолчит "
+            "после нового письма.",
         )
-    for source in list(notified):
-        if source not in silent:
-            notified.discard(source)
 
 
 async def notify_admin(bot: Bot, cfg, text: str) -> None:
