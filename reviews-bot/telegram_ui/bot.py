@@ -459,6 +459,9 @@ async def main() -> None:
     conn = storage.connect(os.environ["DATABASE_URL"])
     storage.init_schema(conn)
     ensure_branches(conn)
+    fixed = storage.rematch_unassigned(conn)
+    if fixed:
+        log.info("филиал определён задним числом для отзывов: %s", fixed)
 
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     _include_routers()
