@@ -3,6 +3,7 @@
 
 /reviews        — список отзывов с кнопками-фильтрами
 /find <слово>   — поиск по тексту или имени гостя
+/spam           — что скрыто как реклама
 
 Список — одно сообщение, которое перерисовывается на месте при нажатии
 фильтров. Номер отзыва — кнопка: она присылает полноценную карточку,
@@ -47,7 +48,8 @@ def list_keyboard(page: search.Page, conn) -> InlineKeyboardMarkup:
         # повторное нажатие на активный статус снимает его
         [_btn(_mark(label, f.status == code),
               f.with_(status="a" if f.status == code else code).encode())
-         for code, label in search.STATUSES.items() if code != "a"],
+         for code, label in search.STATUSES.items()
+         if code in search.ROW_STATUSES or code == f.status != "a"],
     ]
 
     branch_label = ("🏠 " + search.branch_name(conn, f.branch)) if f.branch else "🏠 Все филиалы"
@@ -100,6 +102,14 @@ def build(conn, f: Filter) -> tuple[str, InlineKeyboardMarkup]:
 async def cmd_reviews(message: Message, conn) -> None:
     text, kb = build(conn, Filter())
     await message.answer(text, reply_markup=kb)
+
+
+@router.message(Command("spam"))
+async def cmd_spam(message: Message, conn) -> None:
+    """Что скрыто как реклама — проверить, не попал ли туда настоящий отзыв."""
+    text, kb = build(conn, Filter(status="s"))
+    await message.answer(text + "\n\nЕсли здесь настоящий отзыв, откройте его по номеру "
+                         "и нажмите «↩️ Это не реклама».", reply_markup=kb)
 
 
 @router.message(Command("find"))

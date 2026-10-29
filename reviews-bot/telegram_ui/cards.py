@@ -37,12 +37,14 @@ STATUS_MARKS = {
     "in_progress": "🟡 В РАБОТЕ",
     "answered": "✅ ОТВЕЧЕНО",
     "skipped": "⚪️ БЕЗ ОТВЕТА",
+    "spam": "🚫 РЕКЛАМА",
 }
 
 ASSIGNEE_LABELS = {
     "in_progress": "В работе у",
     "answered": "Ответил(а)",
     "skipped": "Закрыл(а)",
+    "spam": "Пометил(а) как рекламу",
 }
 
 # Статусы, при которых отзыв считается незакрытым и показывает рабочие кнопки.
@@ -119,7 +121,7 @@ def render_card(card: CardData) -> str:
     source = SOURCE_NAMES.get(card.source, card.source)
     # Негатив помечаем и после взятия в работу: отметка не должна исчезать,
     # пока отзыв не закрыт.
-    if card.is_negative and card.status not in ("answered", "skipped"):
+    if card.is_negative and card.status not in ("answered", "skipped", "spam"):
         head = f"🚨 {head.split(' ', 1)[1]}" if card.status != "attention" else head
     lines.append(f"<b>{head}</b> · {e(source)}")
 
@@ -160,6 +162,12 @@ def render_card(card: CardData) -> str:
         if who:
             lines.append(f"🙋 {who}: {e(card.assignee)}")
 
+    if card.status == "spam":
+        if not card.assignee:
+            lines.append("🤖 Бот распознал рекламу автоматически")
+        lines.append("Скрыт из статистики, отчётов и списков. Отвечать не нужно — "
+                     "на площадке можно пожаловаться на отзыв.")
+
     lines.append("")
     lines.append(f"<code>#{card.review_id}</code>")
 
@@ -194,7 +202,9 @@ def build_keyboard(card: CardData) -> list[list[tuple[str, str]]]:
         rows.append(second)
 
     if card.status in (*OPEN_STATUSES, "in_progress"):
-        rows.append([("Без ответа", f"rv:skip:{rid}")])
+        rows.append([("Без ответа", f"rv:skip:{rid}"), ("🚫 Реклама", f"rv:spam:{rid}")])
+    elif card.status == "spam":
+        rows.append([("↩️ Это не реклама", f"rv:notspam:{rid}")])
 
     return rows
 

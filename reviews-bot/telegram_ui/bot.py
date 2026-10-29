@@ -145,6 +145,7 @@ async def cmd_start(message: Message) -> None:
         "Команды:\n"
         "/reviews — список отзывов с фильтрами: период, статус, филиал, площадка\n"
         "/find слово — поиск по тексту отзыва или имени гостя\n"
+        "/spam — что бот скрыл как рекламу\n"
         "/new — показать отзывы, которые ещё никто не взял\n"
         "/negative — негативные отзывы без реакции\n"
         "/stats — статистика: сегодня, неделя, месяц, свой период\n"
@@ -360,6 +361,24 @@ async def on_button(callback: CallbackQuery, state: FSMContext, conn) -> None:
         await refresh_everywhere(callback.bot, conn, review_id, callback.message)
         return
 
+    if action == "spam":
+        storage.mark_spam(conn, review_id, user.id, name)
+        await callback.answer("Скрыто как реклама — из статистики и списков убрано")
+        await refresh_everywhere(callback.bot, conn, review_id, callback.message)
+        return
+
+    if action == "notspam":
+        storage.unmark_spam(conn, review_id)
+        await callback.answer("Вернули — отзыв снова в работе")
+        await refresh_everywhere(callback.bot, conn, review_id, callback.message)
+        # Если бот спрятал отзыв сразу, в общий чат он не попадал — отправим.
+        chat = os.environ.get("REVIEWS_CHAT_ID") or os.environ.get("TELEGRAM_ADMIN_CHAT", "")
+        sent_to = {c for c, _ in storage.review_messages(conn, review_id)}
+        if chat and chat not in sent_to:
+            await deliver(callback.bot, conn, chat, review_id,
+                          os.environ.get("NEGATIVE_CHAT_ID", ""))
+        return
+
     if action == "fulltext":
         await state.set_state(FullText.waiting)
         await state.update_data(review_id=review_id)
@@ -468,6 +487,14 @@ async def main() -> None:
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     _include_routers()
 
+    # Реклама, пришедшая до появления фильтра: прячем и перерисовываем
+    # уже отправленные карточки, чтобы на них не тратили время.
+    hidden = storage.hide_existing_spam(conn)
+    for review_id in hidden:
+        await refresh_everywhere(bot, conn, review_id)
+    if hidden:
+        log.info("скрыто как реклама задним числом: %s", hidden)
+
     # Почта читается фоновой задачей, параллельно с обработкой кнопок.
     # Своё подключение к базе: конвейер и обработчики не должны
     # толкаться в одной транзакции.
@@ -567,6 +594,15 @@ async def deliver(bot: Bot, conn, chat: str, review_id: int, negative_chat: str 
     """
     card = card_for(conn, review_id)
     if card is None:
+        return
+
+    # Реклама в рабочие чаты не идёт — только администратору, чтобы
+    # ошибку фильтра можно было исправить кнопкой «Это не реклама».
+    if card.status == "spam":
+        admin = os.environ.get("TELEGRAM_ADMIN_CHAT", "")
+        if admin:
+            await post_card(bot, conn, admin, review_id)
+        log.info("отзыв #%s похож на рекламу — в рабочие чаты не отправлен", review_id)
         return
 
     target = chat
