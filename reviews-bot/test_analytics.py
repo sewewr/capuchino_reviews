@@ -211,6 +211,12 @@ def with_db(conn):
     empty = A.render_stats(A.collect(conn, A.parse_period("01.01.2026", NOW)))
     ok("Отзывов за этот период нет" in empty, "пустой период — без таблицы нулей")
 
+    first = A.render_stats(A.collect(conn, A.parse_period("12.10 18.10", NOW)),
+                           A.collect(conn, A.parse_period("05.10 11.10", NOW)))
+    ok("▲" not in first and "Отзывов: <b>3</b>\n" in first,
+       "прошлый период пустой (бот ещё не работал) — без «▲ +3»")
+    ok("2ГИС 0 ⚠️" in first, "площадка без отзывов показана нулём")
+
     print("=== еженедельный отчёт ===")
     report = A.build_report(conn, now=NOW, chat="-1009876543")
     ok(valid_html(report), "HTML корректный")

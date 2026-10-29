@@ -325,9 +325,17 @@ def bar(n: int, top: int, width: int = 10) -> str:
     return "▇" * max(1, round(width * n / top))
 
 
+# Площадки, которые бот читает. Ноль показываем явно: «Яндекс 0» за неделю —
+# повод проверить, приходят ли письма.
+WATCHED_SOURCES = ("yandex", "2gis")
+
+
 def _sources_line(s: Stats) -> str:
-    return " · ".join(f"{SOURCE_NAMES.get(src, src)} {n} ({num(avg)}★)"
-                      for src, (n, avg) in s.by_source.items())
+    parts = [f"{SOURCE_NAMES.get(src, src)} {n} ({num(avg)}★)"
+             for src, (n, avg) in s.by_source.items()]
+    parts += [f"{SOURCE_NAMES[src]} 0 ⚠️" for src in WATCHED_SOURCES
+              if src not in s.by_source]
+    return " · ".join(parts)
 
 
 def _branch_line(b: BranchStats) -> str:
@@ -343,9 +351,11 @@ def render_stats(s: Stats, prev: Stats | None = None) -> str:
 
     lines = [head, ""]
     total = f"Отзывов: <b>{s.total}</b>"
-    if prev is not None and s.total != prev.total:
+    # Сравнивать с пустым периодом бессмысленно: скорее всего, бот тогда
+    # ещё не работал, и «▲ +12» только запутает.
+    if prev is not None and prev.total and s.total != prev.total:
         total += f" ({delta_count(s.total, prev.total)} предыдущему периоду)"
-    elif prev is not None:
+    elif prev is not None and prev.total:
         total += " (столько же, сколько в предыдущем периоде)"
     lines.append(total)
     avg = f"Средняя оценка: <b>{num(s.avg)}★</b>"
@@ -396,7 +406,9 @@ def render_weekly(s: Stats, prev: Stats, attention: list[AttentionItem],
             lines.append(f"Неделей раньше было {prev.total} — стоит проверить, "
                          "приходят ли письма от площадок.")
     else:
-        if s.total != prev.total:
+        if not prev.total:
+            lines.append(f"Отзывов: <b>{s.total}</b>")
+        elif s.total != prev.total:
             lines.append(f"Отзывов: <b>{s.total}</b> ({delta_count(s.total, prev.total)} "
                          "прошлой неделе)")
         else:
