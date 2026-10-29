@@ -154,6 +154,30 @@ def main():
     ) + timedelta(days=1)
     print(f"  если бы письма были свежими: {pipeline.silent_sources(conn, now=just_after)}  (ждём пусто)")
 
+    print("\n--- предупреждение о тишине не повторяется после перезапуска ---")
+    import asyncio
+    from types import SimpleNamespace
+
+    from telegram_ui import bot as B
+
+    sent_alerts = []
+
+    class AlertBot:
+        async def send_message(self, chat_id, text, **kw):
+            sent_alerts.append(text)
+
+    cfg = SimpleNamespace(telegram_admin_chat="-100ADMIN")
+    for _restart in range(3):  # каждый «перезапуск» — без памяти о прошлом
+        asyncio.run(B.check_silence(AlertBot(), conn, cfg))
+    silent_now = len(pipeline.silent_sources(conn))
+    print(f"  предупреждений после 3 перезапусков: {len(sent_alerts)}  (ждём {silent_now} — по одному на площадку)")
+    with conn.cursor() as cur:
+        cur.execute("UPDATE emails SET received_at = received_at + interval '1 day' "
+                    "WHERE id = (SELECT max(id) FROM emails WHERE source = 'yandex')")
+    conn.commit()
+    asyncio.run(B.check_silence(AlertBot(), conn, cfg))
+    print(f"  пришло новое письмо, площадка снова молчит: {len(sent_alerts)}  (ждём {silent_now + 1})")
+
     print("\n--- что ушло бы в Telegram ---")
     for review_id in sent5[:2]:
         card = CardData(**dict(storage.get_card_data(conn, review_id)))
