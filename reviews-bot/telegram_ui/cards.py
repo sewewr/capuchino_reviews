@@ -39,6 +39,12 @@ STATUS_MARKS = {
     "skipped": "⚪️ БЕЗ ОТВЕТА",
 }
 
+ASSIGNEE_LABELS = {
+    "in_progress": "В работе у",
+    "answered": "Ответил(а)",
+    "skipped": "Закрыл(а)",
+}
+
 # Статусы, при которых отзыв считается незакрытым и показывает рабочие кнопки.
 OPEN_STATUSES = ("new", "attention")
 
@@ -148,8 +154,11 @@ def render_card(card: CardData) -> str:
     elif card.source == "yandex":
         lines.append("   (отзыв опубликован на 1–2 дня раньше)")
 
-    if card.assignee and card.status == "in_progress":
-        lines.append(f"🙋 В работе: {e(card.assignee)}")
+    # Кто ведёт отзыв — видно всем, чтобы не взяли второй раз (п. 8 ТЗ).
+    if card.assignee:
+        who = ASSIGNEE_LABELS.get(card.status)
+        if who:
+            lines.append(f"🙋 {who}: {e(card.assignee)}")
 
     lines.append("")
     lines.append(f"<code>#{card.review_id}</code>")
@@ -173,6 +182,7 @@ def build_keyboard(card: CardData) -> list[list[tuple[str, str]]]:
             ("Подготовить ответ", f"rv:draft:{rid}"),
             ("Отвечено", f"rv:done:{rid}"),
         ])
+        rows.append([("Вернуть в очередь", f"rv:release:{rid}")])
 
     second: list[tuple[str, str]] = []
     if card.text_truncated and not card.text_full:

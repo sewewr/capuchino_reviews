@@ -70,33 +70,54 @@ def card_for(conn, review_id: int) -> CardData | None:
 # --- Отправка карточки -----------------------------------------------------
 
 
-async def send_review(bot: Bot, chat_id: str, conn, review_id: int) -> None:
-    """Отправить карточку отзыва в чат. Вызывается из пайплайна сбора."""
+async def post_card(bot: Bot, conn, chat_id, review_id: int) -> None:
+    """
+    Отправить карточку и запомнить, куда она ушла. Все карточки отправляются
+    только через эту функцию — иначе при смене статуса какая-то копия
+    останется необновлённой.
+    """
     card = card_for(conn, review_id)
     if card is None:
         log.warning("отзыв %s не найден", review_id)
         return
-    await bot.send_message(
-        chat_id,
-        render_card(card),
-        reply_markup=keyboard(card),
-        disable_web_page_preview=True,
-    )
-
-
-async def refresh(callback: CallbackQuery, conn, review_id: int) -> None:
-    """Перерисовать карточку на месте после изменения статуса."""
-    card = card_for(conn, review_id)
-    if card is None:
-        return
     try:
-        await callback.message.edit_text(
+        sent = await bot.send_message(
+            chat_id,
             render_card(card),
             reply_markup=keyboard(card),
             disable_web_page_preview=True,
         )
-    except Exception as e:  # текст не изменился или сообщение слишком старое
-        log.debug("не удалось обновить карточку %s: %s", review_id, e)
+    except Exception:
+        log.exception("не отправил карточку отзыва #%s в %s", review_id, chat_id)
+        return
+    storage.remember_message(conn, review_id, chat_id, sent.message_id)
+
+
+async def refresh_everywhere(bot: Bot, conn, review_id: int, current=None) -> None:
+    """
+    Перерисовать все копии карточки после смены статуса: в общем чате,
+    в чате «Негатив», в ответах на /new. current — сообщение, на котором
+    нажали кнопку: оно обновляется, даже если было отправлено до того, как
+    бот начал запоминать копии.
+    """
+    card = card_for(conn, review_id)
+    if card is None:
+        return
+
+    targets = set(storage.review_messages(conn, review_id))
+    if current is not None:
+        targets.add((str(current.chat.id), current.message_id))
+
+    text, markup = render_card(card), keyboard(card)
+    for chat_id, message_id in targets:
+        try:
+            await bot.edit_message_text(
+                text, chat_id=chat_id, message_id=message_id,
+                reply_markup=markup, disable_web_page_preview=True,
+            )
+        except Exception as e:
+            # «текст не изменился» или сообщение удалили — не страшно
+            log.debug("не обновил копию #%s в %s: %s", review_id, chat_id, e)
 
 
 # --- Команды ---------------------------------------------------------------
@@ -199,13 +220,7 @@ async def cmd_negative(message: Message, conn) -> None:
         return
 
     for review_id in ids:
-        card = card_for(conn, review_id)
-        if card:
-            await message.answer(
-                render_card(card),
-                reply_markup=keyboard(card),
-                disable_web_page_preview=True,
-            )
+        await post_card(message.bot, conn, message.chat.id, review_id)
 
 
 @dp.message(Command("new"))
@@ -222,13 +237,7 @@ async def cmd_new(message: Message, conn) -> None:
         return
 
     for review_id in ids:
-        card = card_for(conn, review_id)
-        if card:
-            await message.answer(
-                render_card(card),
-                reply_markup=keyboard(card),
-                disable_web_page_preview=True,
-            )
+        await post_card(message.bot, conn, message.chat.id, review_id)
 
 
 @dp.message(Command("demo"))
@@ -273,13 +282,7 @@ async def cmd_demo(message: Message, conn) -> None:
     for review in samples:
         review.dedup_key = make_dedup_key(review)
         result = storage.save_review(conn, review)
-        card = card_for(conn, result.review_id)
-        if card:
-            await message.answer(
-                render_card(card),
-                reply_markup=keyboard(card),
-                disable_web_page_preview=True,
-            )
+        await post_card(message.bot, conn, message.chat.id, result.review_id)
 
     await message.answer(
         "Это учебные отзывы — можно нажимать любые кнопки.\n"
@@ -299,23 +302,45 @@ async def cmd_clear_demo(message: Message, conn) -> None:
 # --- Кнопки ----------------------------------------------------------------
 
 
-STATUS_BY_ACTION = {
-    "take": ("in_progress", "Взяли в работу"),
-    "done": ("answered", "Отмечено как отвеченный"),
-    "skip": ("skipped", "Отмечено «без ответа»"),
-}
+def display_name(user) -> str:
+    """Как подписать сотрудника в карточке."""
+    if user.full_name:
+        return user.full_name
+    return f"@{user.username}" if user.username else f"id{user.id}"
 
 
 @dp.callback_query(F.data.startswith("rv:"))
 async def on_button(callback: CallbackQuery, state: FSMContext, conn) -> None:
     _, action, raw_id = callback.data.split(":", 2)
     review_id = int(raw_id)
+    user = callback.from_user
+    name = display_name(user)
 
-    if action in STATUS_BY_ACTION:
-        status, note = STATUS_BY_ACTION[action]
-        storage.set_status(conn, review_id, status)
-        await callback.answer(note)
-        await refresh(callback, conn, review_id)
+    if action == "take":
+        won, holder = storage.claim_review(conn, review_id, user.id, name)
+        if won:
+            await callback.answer("Отзыв ваш")
+        else:
+            # Кто-то успел раньше — например, в соседнем чате.
+            await callback.answer(
+                f"Отзыв уже в работе у: {holder or 'другого сотрудника'}",
+                show_alert=True,
+            )
+        await refresh_everywhere(callback.bot, conn, review_id, callback.message)
+        return
+
+    if action in ("done", "skip"):
+        status = "answered" if action == "done" else "skipped"
+        storage.close_review(conn, review_id, status, user.id, name)
+        await callback.answer("Отмечено как отвеченный" if action == "done"
+                              else "Отмечено «без ответа»")
+        await refresh_everywhere(callback.bot, conn, review_id, callback.message)
+        return
+
+    if action == "release":
+        storage.release_review(conn, review_id)
+        await callback.answer("Вернули в очередь")
+        await refresh_everywhere(callback.bot, conn, review_id, callback.message)
         return
 
     if action == "fulltext":
@@ -523,15 +548,7 @@ async def deliver(bot: Bot, conn, chat: str, review_id: int, negative_chat: str 
         targets.append(negative_chat)
 
     for where in targets:
-        try:
-            await bot.send_message(
-                where,
-                render_card(card),
-                reply_markup=keyboard(card),
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            log.exception("не отправил карточку отзыва #%s в %s", review_id, where)
+        await post_card(bot, conn, where, review_id)
 
 
 async def sync_sheet(bot: Bot, conn, cfg, last_error: str | None) -> str | None:
