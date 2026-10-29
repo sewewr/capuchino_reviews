@@ -66,12 +66,25 @@ CREATE TABLE IF NOT EXISTS reviews (
 
     status             TEXT NOT NULL DEFAULT 'new',  -- new | attention | in_progress | answered | skipped
     is_negative        BOOLEAN NOT NULL DEFAULT FALSE,  -- оценка не выше порога (п. 7 ТЗ)
+    reply_text         TEXT,                  -- итоговый ответ, ушедший на площадку (п. 9, 11 ТЗ)
     assignee_id        BIGINT,                -- Telegram ID того, кто взял отзыв (п. 8 ТЗ)
     assignee_name      TEXT,
     taken_at           TIMESTAMPTZ,
     email_id           INTEGER REFERENCES emails(id),
     warnings           TEXT[],
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Черновики ответов от ИИ (п. 9 ТЗ). Храним все варианты: по ним видно,
+-- как формулировал бот, и с ними сверяется, чтобы ответы не начинались одинаково.
+CREATE TABLE IF NOT EXISTS drafts (
+    id          SERIAL PRIMARY KEY,
+    review_id   INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    style       TEXT NOT NULL,           -- base | another | shorter | warmer | formal | manual
+    user_id     BIGINT,
+    user_name   TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Все копии карточки в Telegram. Негатив уходит в два чата, карточку
@@ -162,12 +175,14 @@ MIGRATIONS = [
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS text_full TEXT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS published_at DATE",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS is_negative BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS reply_text TEXT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS assignee_id BIGINT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS assignee_name TEXT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS taken_at TIMESTAMPTZ",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS chat_id TEXT",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS external_id TEXT",
     "CREATE INDEX IF NOT EXISTS review_messages_review_idx ON review_messages (review_id)",
+    "CREATE INDEX IF NOT EXISTS drafts_review_idx ON drafts (review_id, id)",
     # индексы после колонок: на старой базе колонки может ещё не быть
     "CREATE INDEX IF NOT EXISTS reviews_negative_idx ON reviews (is_negative) WHERE is_negative",
 ]
@@ -558,6 +573,81 @@ def review_messages(conn: psycopg.Connection, review_id: int) -> list[tuple[str,
             (review_id,),
         )
         return [(r["chat_id"], r["message_id"]) for r in cur.fetchall()]
+
+
+# --- Черновики ответов (п. 9 ТЗ) --------------------------------------------
+
+
+def review_for_draft(conn: psycopg.Connection, review_id: int) -> dict | None:
+    """Всё, что нужно модели: текст (полный, если добран), оценка, автор, филиал."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.id AS review_id, r.source, r.rating,
+                   COALESCE(r.text_full, r.text) AS text,
+                   (r.text_truncated AND r.text_full IS NULL) AS text_truncated,
+                   r.author, r.is_negative,
+                   COALESCE(b.address, r.branch_address_raw) AS branch_address
+            FROM reviews r LEFT JOIN branches b ON b.id = r.branch_id
+            WHERE r.id = %s
+            """,
+            (review_id,),
+        )
+        return cur.fetchone()
+
+
+def save_draft(conn: psycopg.Connection, review_id: int, text: str, style: str,
+               user_id: int | None = None, user_name: str | None = None) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO drafts (review_id, text, style, user_id, user_name) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (review_id, text, style, user_id, user_name),
+        )
+        draft_id = cur.fetchone()["id"]
+    conn.commit()
+    return draft_id
+
+
+def latest_draft(conn: psycopg.Connection, review_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, text, style FROM drafts WHERE review_id = %s "
+            "ORDER BY id DESC LIMIT 1",
+            (review_id,),
+        )
+        return cur.fetchone()
+
+
+def recent_draft_texts(conn: psycopg.Connection, limit: int = 15,
+                       exclude_review: int | None = None) -> list[str]:
+    """
+    Последние ответы по ДРУГИМ отзывам — чтобы новый не начинался так же.
+    Сначала опубликованные ответы, потом свежие черновики.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT text FROM (
+                SELECT reply_text AS text, id AS rid, 0 AS prio FROM reviews
+                 WHERE reply_text IS NOT NULL AND id IS DISTINCT FROM %s
+                UNION ALL
+                SELECT text, review_id AS rid, 1 AS prio FROM drafts
+                 WHERE review_id IS DISTINCT FROM %s
+            ) t
+            ORDER BY prio, rid DESC
+            LIMIT %s
+            """,
+            (exclude_review, exclude_review, limit),
+        )
+        return [r["text"] for r in cur.fetchall()]
+
+
+def set_reply(conn: psycopg.Connection, review_id: int, text: str) -> None:
+    """Итоговый ответ — то, что ушло на площадку. Выгружается в таблицу."""
+    with conn.cursor() as cur:
+        cur.execute("UPDATE reviews SET reply_text = %s WHERE id = %s", (text, review_id))
+    conn.commit()
 
 
 # --- Негативные отзывы (пп. 7 и 17 ТЗ) -------------------------------------

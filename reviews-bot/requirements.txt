@@ -3,3 +3,5 @@ psycopg[binary]>=3.2
 aiogram>=3.13
 gspread>=6.0
 google-auth>=2.30
+# версия закреплена: вызов client.chat(Chat) проверен на 0.2.x
+gigachat>=0.2.3,<0.3

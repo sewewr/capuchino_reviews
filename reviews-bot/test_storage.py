@@ -20,7 +20,7 @@ def main() -> None:
     conn = storage.connect(DB)
 
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS review_messages, reviews, emails, branches CASCADE")
+        cur.execute("DROP TABLE IF EXISTS drafts, review_messages, reviews, emails, branches CASCADE")
     conn.commit()
     storage.init_schema(conn)
 
@@ -123,7 +123,7 @@ def test_migration_from_old_schema() -> None:
     from psycopg.rows import dict_row
 
     old = """
-    DROP TABLE IF EXISTS review_messages, reviews, emails, branches, state CASCADE;
+    DROP TABLE IF EXISTS drafts, review_messages, reviews, emails, branches, state CASCADE;
     CREATE TABLE branches (
         id SERIAL PRIMARY KEY, source TEXT NOT NULL, name TEXT NOT NULL,
         address TEXT NOT NULL, address_norm TEXT NOT NULL,
@@ -165,11 +165,13 @@ def test_migration_from_old_schema() -> None:
         cols = {r["column_name"] for r in cur.fetchall()}
 
     missing = {"is_negative", "author", "text_full", "published_at",
-               "assignee_id", "assignee_name", "taken_at"} - cols
+               "assignee_id", "assignee_name", "taken_at", "reply_text"} - cols
     assert not missing, f"колонки не добавились: {missing}"
 
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('review_messages') AS t")
         assert cur.fetchone()["t"], "таблица review_messages не создалась"
+        cur.execute("SELECT to_regclass('drafts') AS t")
+        assert cur.fetchone()["t"], "таблица drafts не создалась"
     print("  миграция со старой базы: ок")
     conn.close()

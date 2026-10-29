@@ -80,7 +80,7 @@ def fetch_rows(conn) -> list[list[str]]:
             """
             SELECT r.received_at, r.published_at, r.source, r.rating,
                    r.text, r.text_full, r.text_truncated,
-                   r.author, r.reply_url, r.status, r.assignee_name,
+                   r.author, r.reply_url, r.status, r.assignee_name, r.reply_text,
                    b.name AS branch_name, b.address AS branch_address,
                    r.branch_address_raw
             FROM reviews r
@@ -119,7 +119,7 @@ def _row(rec) -> list[str]:
         rec["reply_url"] or "",
         STATUS_NAMES.get(rec["status"], rec["status"]),
         rec["assignee_name"] or "",
-        "",  # Ответ — появится вместе с ИИ-черновиками
+        (rec["reply_text"] or "")[:CELL_LIMIT],
     ]
 
 
