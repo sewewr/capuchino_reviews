@@ -39,9 +39,9 @@ dp = Dispatcher()
 
 def _include_routers() -> None:
     """Подключаем модули с кнопками. Отдельно, чтобы избежать циклического импорта."""
-    from telegram_ui import draft_ui, stats_ui
+    from telegram_ui import draft_ui, search_ui, stats_ui
 
-    for module in (draft_ui, stats_ui):
+    for module in (draft_ui, stats_ui, search_ui):
         if module.router.parent_router is None:
             dp.include_router(module.router)
 
@@ -143,6 +143,8 @@ async def cmd_start(message: Message) -> None:
         "Если Яндекс обрезал текст, нажмите «Добавить полный текст» "
         "и пришлите его целиком — так он сохранится в базе.\n\n"
         "Команды:\n"
+        "/reviews — список отзывов с фильтрами: период, статус, филиал, площадка\n"
+        "/find слово — поиск по тексту отзыва или имени гостя\n"
         "/new — показать отзывы, которые ещё никто не взял\n"
         "/negative — негативные отзывы без реакции\n"
         "/stats — статистика: сегодня, неделя, месяц, свой период\n"

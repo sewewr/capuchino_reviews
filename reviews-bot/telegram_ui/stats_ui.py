@@ -107,7 +107,7 @@ async def cancel_custom(message: Message, state: FSMContext) -> None:
     await message.answer("Хорошо, отменил.")
 
 
-@router.message(CustomPeriod.waiting, F.text)
+@router.message(CustomPeriod.waiting, F.text & ~F.text.startswith("/"))
 async def receive_period(message: Message, state: FSMContext, conn) -> None:
     try:
         period = analytics.parse_period(message.text)
