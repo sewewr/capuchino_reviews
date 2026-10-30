@@ -285,6 +285,13 @@ async def report_loop(bot: Bot, conn, notify_admin=None, now=None) -> None:
             await send_if_due(bot, conn, notify_admin)
         except Exception:
             log.exception("сбой в расписании отчёта")
+        try:
+            from telegram_ui.manage_ui import monthly_if_due
+
+            await monthly_if_due(bot, conn, notify_admin)
+        except Exception:
+            log.exception("сбой в расписании ежемесячного отчёта")
+            conn.rollback()
 
         if tick % TOPICS_EVERY == 0 and drafts.enabled():
             try:

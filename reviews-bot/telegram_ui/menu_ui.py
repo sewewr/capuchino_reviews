@@ -40,14 +40,19 @@ SECTIONS = {
         ("🔍 Поиск по тексту или имени", "find"),
         ("🚫 Скрытая реклама", "spam"),
     ]),
-    "analytics": ("📊 Аналитика", "Цифры, темы и отчёты.", [
+    "analytics": ("📊 Аналитика", "Цифры, темы, сравнение филиалов и отчёты.", [
         ("📊 Статистика", "stats"),
         ("🧭 Что хвалят и ругают", "topics"),
+        ("🏆 Сравнение филиалов", "branches"),
+        ("📈 Динамика рейтинга", "dynamics"),
         ("🗓 Еженедельный отчёт сейчас", "report"),
+        ("📑 Управленческий отчёт за прошлый месяц", "monthly"),
+        ("📑 Текущий месяц по сегодня", "monthly_now"),
     ]),
     "settings": ("⚙️ Настройки", "Порог негатива, расписание отчёта, Google Таблица.", [
         ("🎚 Порог негатива", "threshold"),
-        ("⏰ Расписание отчёта", "report_time"),
+        ("⏰ Расписание еженедельного отчёта", "report_time"),
+        ("📅 Ежемесячный отчёт", "monthly_settings"),
         ("📍 Присылать отчёт в этот чат", "report_here"),
         ("📤 Выгрузить в Google Таблицу", "export"),
         ("🆔 ID этого чата", "id"),
@@ -70,7 +75,10 @@ COMMANDS = [
     ("spam", "Отзывы: скрытая реклама"),
     ("stats", "Аналитика: статистика"),
     ("topics", "Аналитика: что хвалят и ругают"),
+    ("branches", "Аналитика: сравнение филиалов"),
+    ("dynamics", "Аналитика: динамика рейтинга"),
     ("report", "Аналитика: еженедельный отчёт сейчас"),
+    ("monthly", "Аналитика: управленческий отчёт за месяц"),
     ("threshold", "Настройки: порог негатива"),
     ("report_time", "Настройки: расписание отчёта"),
     ("report_here", "Настройки: присылать отчёт сюда"),
@@ -206,8 +214,9 @@ def schedule_text(conn, chat_id) -> str:
 
 @router.callback_query(F.data.startswith("ma:"))
 async def on_action(callback: CallbackQuery, state: FSMContext, conn) -> None:
+    import management
     from telegram_ui import bot as B
-    from telegram_ui import search_ui, stats_ui
+    from telegram_ui import manage_ui, search_ui, stats_ui
 
     action = callback.data.split(":", 1)[1]
     msg = callback.message  # ответы уходят в тот же чат, где открыто меню
@@ -236,6 +245,18 @@ async def on_action(callback: CallbackQuery, state: FSMContext, conn) -> None:
         await stats_ui.cmd_topics(msg, conn)
     elif action == "report":
         await stats_ui.cmd_report(msg, conn)
+    elif action == "branches":
+        await manage_ui.cmd_branches(msg, conn)
+    elif action == "dynamics":
+        await manage_ui.cmd_dynamics(msg, conn)
+    elif action == "monthly":
+        await manage_ui.cmd_monthly(msg, conn, NO_ARGS)
+    elif action == "monthly_now":
+        await manage_ui.cmd_monthly(msg, conn, SimpleNamespace(args="сейчас"))
+    elif action == "monthly_settings":
+        enabled, _ = management.monthly_schedule(conn)
+        await msg.edit_text(manage_ui.monthly_settings_text(conn),
+                            reply_markup=manage_ui.monthly_keyboard(enabled))
     elif action == "threshold":
         current = storage.negative_threshold(conn)
         await msg.edit_text(

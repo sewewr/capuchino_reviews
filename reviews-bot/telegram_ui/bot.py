@@ -39,9 +39,9 @@ dp = Dispatcher()
 
 def _include_routers() -> None:
     """Подключаем модули с кнопками. Отдельно, чтобы избежать циклического импорта."""
-    from telegram_ui import draft_ui, menu_ui, search_ui, stats_ui
+    from telegram_ui import draft_ui, manage_ui, menu_ui, search_ui, stats_ui
 
-    for module in (menu_ui, draft_ui, stats_ui, search_ui):
+    for module in (menu_ui, draft_ui, stats_ui, search_ui, manage_ui):
         if module.router.parent_router is None:
             dp.include_router(module.router)
 
