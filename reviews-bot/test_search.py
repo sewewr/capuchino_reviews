@@ -221,7 +221,8 @@ async def telegram(conn, rokoss, first_id):
     ok(len(kb.inline_keyboard[0]) == 4 and kb.inline_keyboard[0][0].text == "✓ Все", "периоды, «Все» отмечено")
 
     async def click(data):
-        cb = SimpleNamespace(data=data, message=Msg(), bot=None, answers=[])
+        cb = SimpleNamespace(data=data, message=Msg(), bot=None, answers=[],
+                             from_user=SimpleNamespace(id=7, full_name="Анна", username=None))
 
         async def answer(text="", **kw):
             cb.answers.append(text)
