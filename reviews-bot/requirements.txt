@@ -5,3 +5,4 @@ gspread>=6.0
 google-auth>=2.30
 # версия закреплена: вызов client.chat(Chat) проверен на 0.2.x
 gigachat>=0.2.3,<0.3
+matplotlib>=3.8,<4

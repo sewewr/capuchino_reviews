@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     assignee_name      TEXT,
     taken_at           TIMESTAMPTZ,
     topics_at          TIMESTAMPTZ,           -- когда ИИ разобрал темы отзыва (п. 14 ТЗ)
+    closed_at          TIMESTAMPTZ,           -- когда отзыв закрыли: для скорости реакции
     email_id           INTEGER REFERENCES emails(id),
     warnings           TEXT[],
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -195,6 +196,7 @@ MIGRATIONS = [
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS assignee_name TEXT",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS taken_at TIMESTAMPTZ",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS topics_at TIMESTAMPTZ",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS chat_id TEXT",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS external_id TEXT",
     "CREATE INDEX IF NOT EXISTS review_messages_review_idx ON review_messages (review_id)",
@@ -586,7 +588,8 @@ def release_review(conn: psycopg.Connection, review_id: int) -> None:
             """
             UPDATE reviews
                SET status = CASE WHEN is_negative THEN 'attention' ELSE 'new' END,
-                   assignee_id = NULL, assignee_name = NULL, taken_at = NULL
+                   assignee_id = NULL, assignee_name = NULL, taken_at = NULL,
+                   closed_at = NULL
              WHERE id = %s
             """,
             (review_id,),
@@ -669,7 +672,8 @@ def close_review(conn: psycopg.Connection, review_id: int, status: str,
             UPDATE reviews
                SET status = %s,
                    assignee_id = COALESCE(assignee_id, %s),
-                   assignee_name = COALESCE(assignee_name, %s)
+                   assignee_name = COALESCE(assignee_name, %s),
+                   closed_at = COALESCE(closed_at, now())
              WHERE id = %s
             """,
             (status, user_id, user_name, review_id),

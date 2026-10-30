@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import analytics
 import storage
 from telegram_ui import bot as B
-from telegram_ui import menu_ui, search_ui, stats_ui
+from telegram_ui import manage_ui, menu_ui, search_ui, stats_ui
 from test_analytics import valid_html
 from test_search import setup
 
@@ -100,6 +100,8 @@ def main():
         (search_ui, "cmd_reviews"): "reviews", (search_ui, "cmd_spam"): "spam",
         (stats_ui, "cmd_stats"): "stats", (stats_ui, "cmd_topics"): "topics",
         (stats_ui, "cmd_report"): "report", (stats_ui, "cmd_report_here"): "report_here",
+        (manage_ui, "cmd_branches"): "branches", (manage_ui, "cmd_dynamics"): "dynamics",
+        (manage_ui, "cmd_monthly"): "monthly",
     }
     originals = {k: getattr(*k) for k in patches}
     for (mod, name), action in patches.items():

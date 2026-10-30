@@ -45,8 +45,9 @@ class FakeModel:
     def chat(self, chat):
         system = chat.messages[0].content
         user = chat.messages[1].content
-        self.calls.append(("summary" if "резюме" in system else "classify", user))
-        if "резюме" in system:
+        summary = "разбираешь отзывы" not in system  # резюме недели или выводы за месяц
+        self.calls.append(("summary" if summary else "classify", user))
+        if summary:
             reply = "Гостям нравятся десерты, но на Рокоссовского жалуются на ожидание."
         elif self.broken:
             reply = "Извините, не могу помочь"
