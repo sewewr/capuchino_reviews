@@ -190,10 +190,12 @@ async def on_draft_button(callback: CallbackQuery, state: FSMContext, conn) -> N
         await state.set_state(OwnReply.waiting)
         await state.update_data(review_id=review_id)
         await callback.answer()
-        await callback.message.reply(
-            f"Пришлите текст ответа на отзыв #{review_id} в том виде, "
-            "в каком вы его опубликовали.\nОтменить — /cancel"
-        )
+        from telegram_ui.prompts import ask
+
+        await ask(callback.message, callback.from_user,
+                  f"пришлите текст ответа на отзыв #{review_id} в том виде, "
+                  "в каком вы его опубликовали.\nОтменить — /cancel",
+                  "Текст опубликованного ответа", reply=True)
         return
 
     await callback.answer("Неизвестная кнопка")

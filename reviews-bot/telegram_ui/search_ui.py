@@ -118,7 +118,11 @@ async def cmd_find(message: Message, state: FSMContext, conn, command: CommandOb
     if not arg:
         await state.set_state(SearchInput.waiting)
         await state.update_data(filter=Filter().encode())
-        await message.answer("Пришлите слово из отзыва или имя гостя. Передумали — /cancel")
+        from telegram_ui.prompts import ask
+
+        await ask(message, message.from_user,
+                  "пришлите слово из отзыва или имя гостя. Передумали — /cancel",
+                  "Например: торт")
         return
     await _run_search(message, conn, Filter(), arg)
 
@@ -176,8 +180,11 @@ async def on_search_button(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(filter=f.with_(query="").encode())
     await callback.answer()
     hint = "" if f.with_(query="").is_default else " Текущие фильтры сохранятся."
-    await callback.message.answer(
-        f"Пришлите слово из отзыва или имя гостя.{hint} Передумали — /cancel")
+    from telegram_ui.prompts import ask
+
+    await ask(callback.message, callback.from_user,
+              f"пришлите слово из отзыва или имя гостя.{hint} Передумали — /cancel",
+              "Например: торт")
 
 
 @router.callback_query(F.data.startswith("fo:"))

@@ -84,11 +84,12 @@ async def on_stats_button(callback: CallbackQuery, state: FSMContext, conn) -> N
     if key == "custom":
         await state.set_state(CustomPeriod.waiting)
         await callback.answer()
-        await callback.message.answer(
-            "Пришлите даты периода, например <code>01.10 15.10</code> "
-            "или <code>01.09.2026 30.09.2026</code>. Одна дата — один день.\n"
-            "Передумали — /cancel"
-        )
+        from telegram_ui.prompts import ask
+
+        await ask(callback.message, callback.from_user,
+                  "пришлите даты периода, например <code>01.10 15.10</code> "
+                  "или <code>01.09.2026 30.09.2026</code>. Одна дата — один день.\n"
+                  "Передумали — /cancel", "01.10 15.10")
         return
 
     make = PERIODS.get(key)

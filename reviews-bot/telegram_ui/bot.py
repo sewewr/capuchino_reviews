@@ -39,9 +39,9 @@ dp = Dispatcher()
 
 def _include_routers() -> None:
     """Подключаем модули с кнопками. Отдельно, чтобы избежать циклического импорта."""
-    from telegram_ui import draft_ui, search_ui, stats_ui
+    from telegram_ui import draft_ui, menu_ui, search_ui, stats_ui
 
-    for module in (draft_ui, stats_ui, search_ui):
+    for module in (menu_ui, draft_ui, stats_ui, search_ui):
         if module.router.parent_router is None:
             dp.include_router(module.router)
 
@@ -134,29 +134,14 @@ async def refresh_everywhere(bot: Bot, conn, review_id: int, current=None) -> No
 
 @dp.message(Command("start", "help"))
 async def cmd_start(message: Message) -> None:
+    """Коротко о боте и сразу меню: команды запоминать не нужно."""
+    from telegram_ui.menu_ui import root_keyboard
+
     await message.answer(
-        "Бот собирает отзывы с площадок и присылает их сюда.\n\n"
-        "Когда приходит новый отзыв, нажмите «Взять в работу» — "
-        "остальные увидят, что им уже занимаются.\n\n"
-        "Взяв отзыв, нажмите «Подготовить ответ» — бот предложит черновик. "
-        "Его можно переписать: короче, теплее, официальнее или совсем иначе.\n\n"
-        "Если Яндекс обрезал текст, нажмите «Добавить полный текст» "
-        "и пришлите его целиком — так он сохранится в базе.\n\n"
-        "Команды:\n"
-        "/reviews — список отзывов с фильтрами: период, статус, филиал, площадка\n"
-        "/find слово — поиск по тексту отзыва или имени гостя\n"
-        "/spam — что бот скрыл как рекламу\n"
-        "/new — показать отзывы, которые ещё никто не взял\n"
-        "/negative — негативные отзывы без реакции\n"
-        "/stats — статистика: сегодня, неделя, месяц, свой период\n"
-        "/report — еженедельный отчёт прямо сейчас\n"
-        "/topics — что хвалят и что ругают (ИИ-разбор тем)\n"
-        "/report_time — когда приходит еженедельный отчёт\n"
-        "/report_here — присылать отчёт в этот чат\n"
-        "/threshold — порог негатива (сейчас 1–3 звезды)\n"
-        "/export — выгрузить в Google Таблицу сейчас\n"
-        "/demo — учебные отзывы, чтобы попробовать кнопки\n"
-        "/id — узнать ID этого чата"
+        "Бот собирает отзывы с Яндекс Карт и 2ГИС и присылает их сюда карточками.\n\n"
+        "Всё, что умеет бот, — в меню ниже. Открыть его снова: /menu "
+        "или кнопка «Меню» слева от поля ввода.",
+        reply_markup=root_keyboard(),
     )
 
 
@@ -384,12 +369,16 @@ async def on_button(callback: CallbackQuery, state: FSMContext, conn) -> None:
         await state.set_state(FullText.waiting)
         await state.update_data(review_id=review_id)
         await callback.answer()
-        await callback.message.reply(
-            f"Пришлите полный текст отзыва #{review_id} ответом на это сообщение.\n"
+        from telegram_ui.prompts import ask
+
+        await ask(
+            callback.message, callback.from_user,
+            f"пришлите полный текст отзыва #{review_id} ответом на это сообщение.\n"
             "Можно добавить имя автора и дату публикации отдельными строками:\n"
             "<code>Автор: Мария К.</code>\n"
             "<code>Дата: 26.08.2026</code>\n\n"
-            "Чтобы отменить — /cancel"
+            "Чтобы отменить — /cancel",
+            "Полный текст отзыва", reply=True,
         )
         return
 
@@ -487,6 +476,10 @@ async def main() -> None:
 
     bot = Bot(token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     _include_routers()
+
+    from telegram_ui.menu_ui import set_commands
+
+    await set_commands(bot)
 
     # Реклама, пришедшая до появления фильтра: прячем и перерисовываем
     # уже отправленные карточки, чтобы на них не тратили время.
