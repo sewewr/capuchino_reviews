@@ -358,7 +358,7 @@ def main():
     unit_tests()
     conn = storage.connect(os.environ["DATABASE_URL"])
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS review_topics, drafts, review_messages, reviews, emails, branches, state CASCADE")
+        cur.execute("DROP TABLE IF EXISTS review_comments, review_topics, drafts, review_messages, reviews, emails, branches, state CASCADE")
     conn.commit()
     storage.init_schema(conn)
     from seed_branches import BRANCHES, SOURCES

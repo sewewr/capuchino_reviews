@@ -20,7 +20,7 @@ def main() -> None:
     conn = storage.connect(DB)
 
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS review_topics, drafts, review_messages, reviews, emails, branches CASCADE")
+        cur.execute("DROP TABLE IF EXISTS review_comments, review_topics, drafts, review_messages, reviews, emails, branches CASCADE")
     conn.commit()
     storage.init_schema(conn)
 
@@ -123,7 +123,7 @@ def test_migration_from_old_schema() -> None:
     from psycopg.rows import dict_row
 
     old = """
-    DROP TABLE IF EXISTS review_topics, drafts, review_messages, reviews, emails, branches, state CASCADE;
+    DROP TABLE IF EXISTS review_comments, review_topics, drafts, review_messages, reviews, emails, branches, state CASCADE;
     CREATE TABLE branches (
         id SERIAL PRIMARY KEY, source TEXT NOT NULL, name TEXT NOT NULL,
         address TEXT NOT NULL, address_norm TEXT NOT NULL,

@@ -36,7 +36,7 @@ class FakeSheet:
 
 def setup(conn):
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS review_topics, drafts, review_messages, reviews, emails, branches, state CASCADE")
+        cur.execute("DROP TABLE IF EXISTS review_comments, review_topics, drafts, review_messages, reviews, emails, branches, state CASCADE")
     conn.commit()
     storage.init_schema(conn)
 
