@@ -55,6 +55,12 @@ class FullText(StatesGroup):
     waiting = State()
 
 
+class CommentInput(StatesGroup):
+    """Ждём внутренний комментарий к отзыву."""
+
+    waiting = State()
+
+
 # --- Сборка клавиатуры -----------------------------------------------------
 
 
@@ -73,7 +79,9 @@ def keyboard(card: CardData) -> InlineKeyboardMarkup:
 
 def card_for(conn, review_id: int) -> CardData | None:
     row = storage.get_card_data(conn, review_id)
-    return CardData(**dict(row)) if row else None
+    if not row:
+        return None
+    return CardData(**dict(row), comments=storage.comments(conn, review_id))
 
 
 # --- Отправка карточки -----------------------------------------------------
@@ -365,6 +373,40 @@ async def on_button(callback: CallbackQuery, state: FSMContext, conn) -> None:
                           os.environ.get("NEGATIVE_CHAT_ID", ""))
         return
 
+    if action == "comment":
+        from telegram_ui.prompts import ask
+
+        await state.set_state(CommentInput.waiting)
+        await state.update_data(review_id=review_id)
+        await callback.answer()
+        await ask(callback.message, callback.from_user,
+                  f"напишите комментарий к отзыву #{review_id}. Его увидят только "
+                  "сотрудники — на площадку он не уходит.\nОтменить — /cancel",
+                  "Например: позвонили гостю, извинились", reply=True)
+        return
+
+    if action == "problem":
+        if storage.mark_problem(conn, review_id, name):
+            await callback.answer("Отмечен проблемным — теперь он в негативе", show_alert=False)
+            await refresh_everywhere(callback.bot, conn, review_id, callback.message)
+            # как и негатив по оценке — дубль в чат «Негатив», если он есть
+            neg = os.environ.get("NEGATIVE_CHAT_ID", "")
+            sent_to = {c for c, _ in storage.review_messages(conn, review_id)}
+            if neg and neg not in sent_to:
+                await post_card(callback.bot, conn, neg, review_id)
+        else:
+            await callback.answer("Этот отзыв уже в негативе или закрыт")
+            await refresh_everywhere(callback.bot, conn, review_id, callback.message)
+        return
+
+    if action == "unproblem":
+        if storage.unmark_problem(conn, review_id):
+            await callback.answer("Отметка «Проблемный» снята")
+        else:
+            await callback.answer("Отметки уже нет")
+        await refresh_everywhere(callback.bot, conn, review_id, callback.message)
+        return
+
     if action == "fulltext":
         await state.set_state(FullText.waiting)
         await state.update_data(review_id=review_id)
@@ -392,6 +434,30 @@ async def on_button(callback: CallbackQuery, state: FSMContext, conn) -> None:
 
 
 # --- Приём полного текста --------------------------------------------------
+
+
+@dp.message(Command("cancel"), CommentInput.waiting)
+async def cancel_comment(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@dp.message(CommentInput.waiting, F.text & ~F.text.startswith("/"))
+async def receive_comment(message: Message, state: FSMContext, conn) -> None:
+    data = await state.get_data()
+    await state.clear()
+    review_id = data.get("review_id")
+    if not review_id:
+        return
+    try:
+        storage.add_comment(conn, review_id, message.from_user.id,
+                            display_name(message.from_user), message.text)
+    except ValueError:
+        await message.answer("Пустой комментарий не сохранён.")
+        return
+    await refresh_everywhere(message.bot, conn, review_id)
+    await message.answer(f"💬 Комментарий к отзыву #{review_id} сохранён — он виден в карточке "
+                         "и в Google Таблице.")
 
 
 @dp.message(Command("cancel"), FullText.waiting)

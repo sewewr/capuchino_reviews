@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import html
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -78,6 +78,8 @@ class CardData:
     branch_address: str | None
     assignee: str | None = None
     is_negative: bool = False  # оценка не выше порога негатива
+    problem_by: str | None = None  # кто вручную отметил «Проблемный»
+    comments: list = field(default_factory=list)  # [{user_name, text, created_at}]
 
 
 def render_stars(rating: int | None) -> str:
@@ -162,6 +164,22 @@ def render_card(card: CardData) -> str:
         if who:
             lines.append(f"🙋 {who}: {e(card.assignee)}")
 
+    if card.problem_by:
+        lines.append(f"🚨 Отмечен проблемным: {e(card.problem_by)}")
+
+    # Внутренние комментарии (п. 5 ТЗ): на площадку не уходят. В карточке —
+    # последние два, полностью — в Google Таблице.
+    if card.comments:
+        lines.append("")
+        shown = card.comments[-2:]
+        more = len(card.comments) - len(shown)
+        title = f"💬 Комментарии ({len(card.comments)})" if more else "💬 Комментарии"
+        lines.append(f"<b>{title}</b>")
+        for c in shown:
+            text = c["text"] if len(c["text"]) <= 200 else c["text"][:200].rstrip() + "…"
+            who = e(c.get("user_name") or "сотрудник")
+            lines.append(f"— {who}: {e(text)}")
+
     if card.status == "spam":
         if not card.assignee:
             lines.append("🤖 Бот распознал рекламу автоматически")
@@ -200,6 +218,15 @@ def build_keyboard(card: CardData) -> list[list[tuple[str, str]]]:
         second.append((f"Открыть в {where}", f"url:{card.reply_url}"))
     if second:
         rows.append(second)
+
+    if card.status != "spam":
+        extra = [("💬 Комментарий", f"rv:comment:{rid}")]
+        if card.status in (*OPEN_STATUSES, "in_progress"):
+            if card.problem_by:
+                extra.append(("↩️ Не проблемный", f"rv:unproblem:{rid}"))
+            elif not card.is_negative:
+                extra.append(("🚨 Проблемный", f"rv:problem:{rid}"))
+        rows.append(extra)
 
     if card.status in (*OPEN_STATUSES, "in_progress"):
         rows.append([("Без ответа", f"rv:skip:{rid}"), ("🚫 Реклама", f"rv:spam:{rid}")])
