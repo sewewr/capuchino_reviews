@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     taken_at           TIMESTAMPTZ,
     topics_at          TIMESTAMPTZ,           -- когда ИИ разобрал темы отзыва (п. 14 ТЗ)
     closed_at          TIMESTAMPTZ,           -- когда отзыв закрыли: для скорости реакции
+    problem_by         TEXT,                  -- кто вручную отметил «Проблемный» (п. 6 ТЗ)
     email_id           INTEGER REFERENCES emails(id),
     warnings           TEXT[],
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -98,6 +99,16 @@ CREATE TABLE IF NOT EXISTS review_messages (
     message_id  BIGINT NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (chat_id, message_id)
+);
+
+-- Внутренние комментарии сотрудников к отзыву (п. 5 ТЗ). На площадку не уходят.
+CREATE TABLE IF NOT EXISTS review_comments (
+    id          SERIAL PRIMARY KEY,
+    review_id   INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    user_id     BIGINT,
+    user_name   TEXT,
+    text        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Темы отзыва, которые выделил ИИ (п. 14 ТЗ): что хвалят (+1) и что ругают (−1).
@@ -197,6 +208,8 @@ MIGRATIONS = [
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS taken_at TIMESTAMPTZ",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS topics_at TIMESTAMPTZ",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS problem_by TEXT",
+    "CREATE INDEX IF NOT EXISTS review_comments_review_idx ON review_comments (review_id, id)",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS chat_id TEXT",
     "ALTER TABLE branches ADD COLUMN IF NOT EXISTS external_id TEXT",
     "CREATE INDEX IF NOT EXISTS review_messages_review_idx ON review_messages (review_id)",
@@ -524,7 +537,7 @@ def get_card_data(conn: psycopg.Connection, review_id: int) -> dict | None:
             SELECT r.id AS review_id, r.source, r.rating, r.rating_confident,
                    r.text, r.text_full, r.text_truncated, r.author, r.published_at,
                    r.received_at, r.reply_url, r.status, r.is_negative,
-                   r.assignee_name AS assignee,
+                   r.assignee_name AS assignee, r.problem_by,
                    r.possible_duplicate, r.duplicate_of,
                    b.name AS branch_name, b.address AS branch_address
             FROM reviews r
@@ -595,6 +608,77 @@ def release_review(conn: psycopg.Connection, review_id: int) -> None:
             (review_id,),
         )
     conn.commit()
+
+
+# --- Внутренние комментарии и ручная отметка «Проблемный» (пп. 5, 6 ТЗ) ------
+
+COMMENT_LIMIT = 1000
+
+
+def add_comment(conn: psycopg.Connection, review_id: int, user_id: int | None,
+                user_name: str | None, text: str) -> int:
+    text = (text or "").strip()[:COMMENT_LIMIT]
+    if not text:
+        raise ValueError("пустой комментарий")
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO review_comments (review_id, user_id, user_name, text) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (review_id, user_id, user_name, text),
+        )
+        cid = cur.fetchone()["id"]
+    conn.commit()
+    return cid
+
+
+def comments(conn: psycopg.Connection, review_id: int) -> list[dict]:
+    """Все комментарии к отзыву, старые первыми."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT user_name, text, created_at FROM review_comments "
+            "WHERE review_id = %s ORDER BY id",
+            (review_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def mark_problem(conn: psycopg.Connection, review_id: int, user_name: str) -> bool:
+    """
+    Сотрудник вручную отмечает отзыв проблемным — например, 4★ с серьёзной
+    жалобой. Дальше он ведёт себя как негатив: 🚨, «Требует внимания»,
+    попадает в /negative, статистику негатива и чат «Негатив».
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE reviews
+               SET is_negative = TRUE, problem_by = %s,
+                   status = CASE WHEN status = 'new' THEN 'attention' ELSE status END
+             WHERE id = %s AND NOT is_negative
+               AND status IN ('new', 'attention', 'in_progress')
+            """,
+            (user_name, review_id),
+        )
+        changed = cur.rowcount > 0
+    conn.commit()
+    return changed
+
+
+def unmark_problem(conn: psycopg.Connection, review_id: int) -> bool:
+    """Снять ручную отметку. Негатив по оценке так не снимается — только ручной."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE reviews
+               SET is_negative = FALSE, problem_by = NULL,
+                   status = CASE WHEN status = 'attention' THEN 'new' ELSE status END
+             WHERE id = %s AND problem_by IS NOT NULL
+            """,
+            (review_id,),
+        )
+        changed = cur.rowcount > 0
+    conn.commit()
+    return changed
 
 
 def mark_spam(conn: psycopg.Connection, review_id: int, user_id: int | None = None,

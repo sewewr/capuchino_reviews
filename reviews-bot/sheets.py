@@ -37,6 +37,7 @@ HEADERS = [
     "Статус",
     "Ответственный",
     "Ответ",
+    "Комментарии",  # внутренние комментарии сотрудников (п. 5 ТЗ)
 ]
 
 SOURCE_NAMES = {
@@ -83,7 +84,10 @@ def fetch_rows(conn) -> list[list[str]]:
                    r.text, r.text_full, r.text_truncated,
                    r.author, r.reply_url, r.status, r.assignee_name, r.reply_text,
                    b.name AS branch_name, b.address AS branch_address,
-                   r.branch_address_raw
+                   r.branch_address_raw,
+                   (SELECT string_agg(COALESCE(c.user_name, 'сотрудник') || ': ' || c.text,
+                                      E'\n' ORDER BY c.id)
+                      FROM review_comments c WHERE c.review_id = r.id) AS comments
             FROM reviews r
             LEFT JOIN branches b ON b.id = r.branch_id
             ORDER BY r.received_at DESC, r.id DESC
@@ -121,6 +125,7 @@ def _row(rec) -> list[str]:
         STATUS_NAMES.get(rec["status"], rec["status"]),
         rec["assignee_name"] or "",
         (rec["reply_text"] or "")[:CELL_LIMIT],
+        (rec["comments"] or "")[:CELL_LIMIT],
     ]
 
 
