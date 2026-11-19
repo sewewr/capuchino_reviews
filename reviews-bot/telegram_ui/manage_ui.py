@@ -196,6 +196,10 @@ def monthly_settings_text(conn) -> str:
 
 @router.callback_query(F.data.startswith("mm:"))
 async def on_monthly_settings(callback: CallbackQuery, conn) -> None:
+    from telegram_ui.access import allow_callback
+
+    if not await allow_callback(callback):
+        return
     raw = callback.data.split(":", 1)[1]
     if raw in ("on", "off"):
         storage.set_state(conn, management.MONTHLY_ENABLED, "1" if raw == "on" else "0")

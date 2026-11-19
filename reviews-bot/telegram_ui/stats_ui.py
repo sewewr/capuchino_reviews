@@ -136,7 +136,11 @@ async def cmd_report(message: Message, conn) -> None:
 
 @router.message(Command("report_time"))
 async def cmd_report_time(message: Message, conn, command: CommandObject) -> None:
+    from telegram_ui.access import allow_message
+
     arg = (command.args or "").strip()
+    if arg and not await allow_message(message):
+        return
     if arg:
         try:
             day, at, enabled = analytics.parse_schedule(arg)
@@ -167,6 +171,10 @@ async def cmd_report_time(message: Message, conn, command: CommandObject) -> Non
 
 @router.message(Command("report_here"))
 async def cmd_report_here(message: Message, conn) -> None:
+    from telegram_ui.access import allow_message
+
+    if message.from_user and not message.from_user.is_bot and not await allow_message(message):
+        return
     storage.set_state(conn, analytics.REPORT_CHAT, str(message.chat.id))
     schedule = analytics.load_schedule(conn)
     await message.answer(f"Еженедельный отчёт будет приходить сюда — {schedule.describe()}.")
@@ -291,6 +299,13 @@ async def report_loop(bot: Bot, conn, notify_admin=None, now=None) -> None:
             await monthly_if_due(bot, conn, notify_admin)
         except Exception:
             log.exception("сбой в расписании ежемесячного отчёта")
+            conn.rollback()
+        try:
+            from telegram_ui.backup_ui import backup_if_due
+
+            await backup_if_due(bot, conn)
+        except Exception:
+            log.exception("сбой в расписании резервной копии")
             conn.rollback()
 
         if tick % TOPICS_EVERY == 0 and drafts.enabled():

@@ -39,9 +39,9 @@ dp = Dispatcher()
 
 def _include_routers() -> None:
     """Подключаем модули с кнопками. Отдельно, чтобы избежать циклического импорта."""
-    from telegram_ui import draft_ui, manage_ui, menu_ui, search_ui, stats_ui
+    from telegram_ui import backup_ui, draft_ui, manage_ui, menu_ui, search_ui, stats_ui
 
-    for module in (menu_ui, draft_ui, stats_ui, search_ui, manage_ui):
+    for module in (menu_ui, draft_ui, stats_ui, search_ui, manage_ui, backup_ui):
         if module.router.parent_router is None:
             dp.include_router(module.router)
 
@@ -155,7 +155,15 @@ async def cmd_start(message: Message) -> None:
 
 @dp.message(Command("id"))
 async def cmd_id(message: Message) -> None:
-    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
+    from telegram_ui.access import is_admin, restricted
+
+    text = f"ID этого чата: <code>{message.chat.id}</code>"
+    user = message.from_user
+    if user and not user.is_bot:
+        text += f"\nВаш Telegram ID: <code>{user.id}</code>"
+        if restricted():
+            text += " — администратор" if is_admin(user) else " — сотрудник"
+    await message.answer(text)
 
 
 @dp.message(Command("export"))
@@ -198,6 +206,10 @@ async def cmd_threshold(message: Message, conn, command: CommandObject) -> None:
     current = storage.negative_threshold(conn)
     arg = (command.args or "").strip()
 
+    from telegram_ui.access import allow_message
+
+    if arg and not await allow_message(message):
+        return
     if not arg:
         await message.answer(
             f"Негативными считаются отзывы с оценкой {current} и ниже.\n"

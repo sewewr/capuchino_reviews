@@ -24,6 +24,7 @@ from aiogram.types import (BotCommand, BotCommandScopeAllGroupChats,
 
 import analytics
 import storage
+from telegram_ui import access
 
 log = logging.getLogger(__name__)
 
@@ -49,13 +50,15 @@ SECTIONS = {
         ("📑 Управленческий отчёт за прошлый месяц", "monthly"),
         ("📑 Текущий месяц по сегодня", "monthly_now"),
     ]),
-    "settings": ("⚙️ Настройки", "Порог негатива, расписание отчёта, Google Таблица.", [
+    "settings": ("⚙️ Настройки", "Порог негатива, расписание отчётов, Google Таблица, "
+                 "резервная копия. Менять настройки могут только администраторы.", [
         ("🎚 Порог негатива", "threshold"),
         ("⏰ Расписание еженедельного отчёта", "report_time"),
         ("📅 Ежемесячный отчёт", "monthly_settings"),
         ("📍 Присылать отчёт в этот чат", "report_here"),
         ("📤 Выгрузить в Google Таблицу", "export"),
-        ("🆔 ID этого чата", "id"),
+        ("💾 Резервная копия базы", "backup"),
+        ("🆔 ID чата и мой ID", "id"),
     ]),
     "help": ("❓ Помощь", "Как устроена работа с отзывом и учебные отзывы.", [
         ("📖 Как работать с отзывом", "guide"),
@@ -64,6 +67,9 @@ SECTIONS = {
         ("🧹 Убрать учебные отзывы", "clear_demo"),
     ]),
 }
+
+# Что в меню доступно только администраторам (если задан ADMIN_IDS)
+ADMIN_ACTIONS = {"threshold", "report_time", "report_here", "monthly_settings", "backup"}
 
 # Список команд для кнопки «Меню» Telegram — по разделам, по порядку
 COMMANDS = [
@@ -83,7 +89,8 @@ COMMANDS = [
     ("report_time", "Настройки: расписание отчёта"),
     ("report_here", "Настройки: присылать отчёт сюда"),
     ("export", "Настройки: выгрузить в Google Таблицу"),
-    ("id", "Настройки: ID этого чата"),
+    ("backup", "Настройки: резервная копия базы"),
+    ("id", "Настройки: ID чата и мой Telegram ID"),
     ("demo", "Помощь: учебные отзывы"),
     ("cancel", "Прочее: отменить ввод"),
 ]
@@ -224,6 +231,8 @@ async def on_action(callback: CallbackQuery, state: FSMContext, conn) -> None:
 
     action = callback.data.split(":", 1)[1]
     msg = callback.message  # ответы уходят в тот же чат, где открыто меню
+    if action in ADMIN_ACTIONS and not await access.allow_callback(callback):
+        return
     await callback.answer()
 
     if action == "new":
@@ -276,7 +285,17 @@ async def on_action(callback: CallbackQuery, state: FSMContext, conn) -> None:
     elif action == "export":
         await B.cmd_export(msg, conn)
     elif action == "id":
-        await B.cmd_id(msg)
+        from telegram_ui.access import is_admin, restricted
+
+        text = (f"ID этого чата: <code>{msg.chat.id}</code>\n"
+                f"Ваш Telegram ID: <code>{callback.from_user.id}</code>")
+        if restricted():
+            text += " — администратор" if is_admin(callback.from_user) else " — сотрудник"
+        await msg.answer(text)
+    elif action == "backup":
+        from telegram_ui import backup_ui
+
+        await backup_ui.send_backup(msg.bot, msg.chat.id, conn)
     elif action == "guide":
         await msg.answer(GUIDE)
     elif action == "commands":
@@ -289,6 +308,8 @@ async def on_action(callback: CallbackQuery, state: FSMContext, conn) -> None:
 
 @router.callback_query(F.data.startswith("mt:"))
 async def on_threshold(callback: CallbackQuery, conn) -> None:
+    if not await access.allow_callback(callback):
+        return
     try:
         value = int(callback.data.split(":", 1)[1])
         storage.set_negative_threshold(conn, value)
@@ -308,6 +329,8 @@ async def on_threshold(callback: CallbackQuery, conn) -> None:
 
 @router.callback_query(F.data.startswith("mr:"))
 async def on_schedule(callback: CallbackQuery, conn) -> None:
+    if not await access.allow_callback(callback):
+        return
     raw = callback.data.split(":", 1)[1]
     try:
         day, at, enabled = analytics.parse_schedule("выкл" if raw == "off" else
