@@ -22,6 +22,10 @@ telegram_ui/manage_ui.py     /branches, /dynamics, /monthly и расписан�
 telegram_ui/search_ui.py     /reviews и /find: список с кнопками-фильтрами
 telegram_ui/menu_ui.py       меню с кнопками по разделам и список команд Telegram
 telegram_ui/prompts.py       вопросы с ForceReply — чтобы ответ дошёл и в группе
+telegram_ui/access.py        права администратора по ADMIN_IDS
+backup.py                    резервная копия базы в zip и восстановление
+telegram_ui/backup_ui.py     /backup и еженедельная копия администратору
+restore_backup.py            восстановить базу из копии
 certs/                       сертификат Минцифры для GigaChat
 pipeline.py                  конвейер: почта → парсер → база → Telegram
 parsers/__init__.py          реестр парсеров: выбор по отправителю письма
@@ -46,6 +50,7 @@ test_topics.py               темы и резюме на поддельной 
 test_menu.py                 меню: разделы, каждая кнопка, порог и расписание
 test_management.py           третий этап: сравнение, динамика, месячный отчёт
 test_comments.py             комментарии к отзыву и кнопка «Проблемный»
+test_handover.py             права администратора, копия и восстановление
 check_match.py               проверка, что филиалы узнаются по адресу из письма
 preview_cards.py             как карточки выглядят в Telegram, без запуска бота
 samples/                     реальные письма для тестов (в git не кладём)
@@ -70,6 +75,7 @@ DATABASE_URL=postgresql://... python test_topics.py
 DATABASE_URL=postgresql://... python test_menu.py
 DATABASE_URL=postgresql://... python test_management.py
 DATABASE_URL=postgresql://... python test_comments.py
+DATABASE_URL=postgresql://... python test_handover.py
 DATABASE_URL=postgresql://... python preview_cards.py
 
 # сам бот (нужен TELEGRAM_TOKEN)
@@ -223,6 +229,29 @@ GigaChat требует корневой сертификат Минцифры: 
 
 Команда `/negative` показывает негативные отзывы, на которые ещё никто
 не отреагировал.
+
+## Права администратора (пп. 16, 21 ТЗ)
+
+`ADMIN_IDS` — Telegram ID администраторов через запятую (свой ID — `/id` в
+личке с ботом). Только они меняют порог негатива, расписание и чат отчётов,
+делают резервную копию. Сотрудникам доступно всё для работы с отзывами:
+карточки, черновики, комментарии, списки, поиск, аналитика, отчёты, учебные
+отзывы. Сотрудник, нажавший закрытую кнопку, видит всплывающее «Это могут
+только администраторы бота». Пока `ADMIN_IDS` пуст — ограничений нет.
+
+## Резервная копия (п. 21 ТЗ)
+
+Каждое воскресенье в 03:00 бот присылает в `TELEGRAM_ADMIN_CHAT` zip-архив
+базы; `/backup` — сейчас. В архиве все таблицы в JSON, включая оригиналы
+писем (если архив больше лимита Telegram — без них). Восстановление:
+
+```
+DATABASE_URL=postgresql://... python restore_backup.py reviews-backup-2026-11-01.zip
+```
+
+Скрипт покажет, что в копии, и попросит написать ДА: данные в целевой базе
+заменяются. Это дополнительно к резервным копиям Railway (вкладка Backups
+у сервиса PostgreSQL): копия в Telegram хранится отдельно от сервера.
 
 ## Комментарии и «Проблемный» (пп. 5, 6 ТЗ)
 
